@@ -1,0 +1,35 @@
+.nodus-grid {
+	display: grid;
+	transition: all 0.25s ease;
+	padding: 1rem;
+}
+
+.grid-cell {
+	border-radius: 6px;
+	background: var(--surface, #1e1e1e);
+	color: var(--text, #f1f1f1);
+	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
+	transition:
+		transform 0.2s ease,
+		background 0.2s ease;
+	cursor: grab;
+}
+
+.grid-cell.density-compact {
+	padding: 0.5rem;
+	font-size: 0.85rem;
+}
+
+.grid-cell.density-normal {
+	padding: 1rem;
+	font-size: 1rem;
+}
+
+.grid-cell.density-spacious {
+	padding: 1.25rem;
+	font-size: 1.1rem;
+}
+
+.grid-cell:active {
+	transform: scale(0.97);
+}
