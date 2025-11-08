@@ -1,0 +1,65 @@
+[package]
+name = "nodus-app"
+version = "0.1.0"
+description = "Nodus Security Platform"
+authors = ["Nodus Team"]
+license = "MIT"
+repository = "https://github.com/your-org/nodus"
+default-run = "nodus-app"
+edition = "2021"
+rust-version = "1.60"
+
+[build-dependencies]
+[dependencies]
+# NOTE: The engine library should not depend on Tauri to avoid duplicate native
+# linking when the Tauri binary (the `nodus-community` crate) depends on a
+# specific Tauri release. Keep engine code framework-agnostic.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async runtime
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID generation
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# Error handling
+thiserror = "1.0"
+
+# Cryptography (for license validation and enterprise features)
+ring = "0.16"
+base64 = "0.21"
+
+# Database (will add more specific drivers later)
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono", "uuid"] }
+
+[features]
+# Default features for community build
+default = ["community"]
+
+# Community tier (open source)
+community = []
+
+# Pro tier (community + AI features)
+pro = ["community"]
+
+# Team tier (pro + collaboration)
+team = ["pro"]
+
+# Enterprise tier (team + enterprise features)
+enterprise = ["team"]
+
+[[bin]]
+name = "nodus-app"
+path = "src/main.rs"
+
+[lib]
+name = "nodus"
+crate-type = ["cdylib", "rlib"]
