@@ -1,0 +1,8 @@
+# Node dependencies
+node_modules/
+
+# Rust/Cargo build artifacts (ignore any `target/` directory anywhere in the repo)
+target/
+
+# Tauri build output (also covered by `target/`, but kept explicit)
+src-tauri/target/
