@@ -20,6 +20,11 @@ serde_json = "1.0"
 # Async runtime
 tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
+# Async helpers and utilities used by engine
+futures = "0.3"
+async-trait = "0.1"
+rand = "0.8"
+
 # Logging and tracing
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
@@ -39,6 +44,9 @@ base64 = "0.21"
 
 # Database (will add more specific drivers later)
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono", "uuid"] }
+
+# Regex used by validation module
+regex = "1"
 
 [features]
 # Default features for community build

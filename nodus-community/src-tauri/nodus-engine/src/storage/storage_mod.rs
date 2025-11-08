@@ -1,6 +1,6 @@
 // src/storage/mod.rs
-// Storage Manager - Multi-backend storage with security integration
-// Ports ModernIndexedDB.js, StorageLoader.js, and indexeddb-adapter.js to Rust
+// Storage Manager - Community Version (Simplified)
+// Multi-backend storage without enterprise security integration
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -11,24 +11,15 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
-use crate::security::{SecurityManager, SecurityError};
-use crate::observability::instrument::instrument;
-use crate::policy::policy_snapshot::current_policy;
-
 // Sub-modules
-// The IndexedDB adapter uses `web-sys`/`wasm-bindgen` types which are
-// not Send/Sync and will fail to compile for native targets. Gate the
-// module so it's only compiled for wasm32 targets; native builds should
-// use other adapters (sqlite/memory/etc.). This avoids many platform
-// specific compilation errors when running the desktop build.
 #[cfg(target_arch = "wasm32")]
 pub mod indexeddb_adapter;
-// Storage adapters consolidated or not present in this layout
-// pub mod sqlite_adapter;
-// pub mod postgres_adapter;
-// pub mod memory_adapter;
-// pub mod storage_query;
-// pub mod migrations;
+
+// `sync_mod` and `validation_mod` are declared at `storage/mod.rs` to keep the
+// module tree flat (they are siblings of `storage_mod`). Declaring them here
+// would attempt to create nested modules (e.g. `storage_mod::sync_mod`) which
+// causes the compiler to look for files under a `storage_mod/` subdirectory.
+// Keep this file focused on the core storage manager implementation only.
 
 /// Storage errors with detailed context
 #[derive(Debug, thiserror::Error)]
@@ -81,18 +72,17 @@ pub enum SortDirection {
     Desc,
 }
 
-/// Storage context for operations (replaces JS context objects)
+/// Simplified storage context for community version
 #[derive(Debug, Clone)]
 pub struct StorageContext {
     pub user_id: String,
     pub session_id: Uuid,
-    pub tenant_id: Option<String>,
-    pub classification_level: String,
-    pub compartments: Vec<String>,
     pub operation_id: Uuid,
+    // Removed enterprise-specific fields:
+    // - tenant_id, classification_level, compartments
 }
 
-/// Stored entity with metadata (replaces JS entity objects)
+/// Stored entity with metadata (simplified for community)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredEntity {
     pub id: String,
@@ -103,11 +93,10 @@ pub struct StoredEntity {
     pub created_by: String,
     pub updated_by: String,
     pub version: u64,
-    pub classification: String,
-    pub compartments: Vec<String>,
-    pub tenant_id: Option<String>,
     pub deleted_at: Option<DateTime<Utc>>,
     pub sync_status: SyncStatus,
+    // Removed enterprise-specific fields:
+    // - classification, compartments, tenant_id
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,7 +107,7 @@ pub enum SyncStatus {
     Conflict,
 }
 
-/// Storage adapter trait (replaces JS storage adapter interface)
+/// Storage adapter trait (simplified)
 #[async_trait]
 pub trait StorageAdapter: Send + Sync {
     /// Initialize the storage backend
@@ -151,9 +140,6 @@ pub trait StorageAdapter: Send + Sync {
     /// Get storage statistics
     async fn get_stats(&self) -> Result<StorageStats, StorageError>;
     
-    /// Run migrations
-    async fn migrate(&mut self, target_version: u32) -> Result<(), StorageError>;
-    
     /// Export data for backup
     async fn export_data(&self, ctx: &StorageContext) -> Result<Vec<u8>, StorageError>;
     
@@ -171,12 +157,11 @@ pub struct StorageStats {
     pub pending_changes: u64,
 }
 
-/// Main storage manager (replaces HybridStateManager storage functionality)
+/// Main storage manager (simplified for community)
 pub struct StorageManager {
     adapters: HashMap<String, Box<dyn StorageAdapter>>,
     primary_backend: String,
     fallback_backends: Vec<String>,
-    security_manager: Arc<SecurityManager>,
     cache: Arc<RwLock<HashMap<String, CachedEntity>>>,
     metrics: StorageMetrics,
 }
@@ -206,14 +191,19 @@ struct StorageMetrics {
     pub errors_total: Arc<std::sync::atomic::AtomicU64>,
 }
 
+impl Default for StorageManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StorageManager {
-    /// Create a new storage manager
-    pub fn new(security_manager: Arc<SecurityManager>) -> Self {
+    /// Create a new storage manager (community version)
+    pub fn new() -> Self {
         Self {
             adapters: HashMap::new(),
             primary_backend: "indexeddb".to_string(),
             fallback_backends: vec!["memory".to_string()],
-            security_manager,
             cache: Arc::new(RwLock::new(HashMap::new())),
             metrics: StorageMetrics {
                 cache_hits: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -229,148 +219,125 @@ impl StorageManager {
         self.adapters.insert(name, adapter);
     }
     
+    /// Set primary backend
+    pub fn set_primary_backend(&mut self, backend: String) -> Result<(), StorageError> {
+        if !self.adapters.contains_key(&backend) {
+            return Err(StorageError::BackendError {
+                backend: backend.clone(),
+                error: "Adapter not registered".to_string(),
+            });
+        }
+        self.primary_backend = backend;
+        Ok(())
+    }
+    
     /// Initialize all adapters
     pub async fn initialize(&mut self) -> Result<(), StorageError> {
-        instrument("storage_initialize", || async {
-            for (name, adapter) in self.adapters.iter_mut() {
-                adapter.initialize().await.map_err(|e| {
-                    StorageError::BackendError {
-                        backend: name.clone(),
-                        error: e.to_string(),
-                    }
-                })?;
-                
-                tracing::info!(backend = %name, "Storage adapter initialized");
-            }
-            Ok(())
-        }).await
+        for (name, adapter) in &mut self.adapters {
+            adapter.initialize().await.map_err(|e| StorageError::BackendError {
+                backend: name.clone(),
+                error: format!("Initialization failed: {}", e),
+            })?;
+        }
+        Ok(())
     }
     
-    /// Get an entity with caching and security
+    /// Get an entity with caching and fallback
     pub async fn get(&self, key: &str, ctx: &StorageContext) -> Result<Option<StoredEntity>, StorageError> {
-        instrument("storage_get", || async {
-            self.metrics.operations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            
-            // Security check
-            self.authorize_read(ctx, key).await?;
-            
-            // Check cache first
-            if let Some(cached) = self.get_from_cache(key).await {
-                self.metrics.cache_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return Ok(Some(cached));
+        self.metrics.operations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        
+        // Check cache first
+        if let Some(entity) = self.get_from_cache(key).await {
+            self.metrics.cache_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Ok(Some(entity));
+        }
+        
+        self.metrics.cache_misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        
+        // Try primary backend first
+        match self.get_from_backend(&self.primary_backend, key, ctx).await {
+            Ok(Some(entity)) => {
+                self.cache_entity(key, &entity).await;
+                Ok(Some(entity))
             }
-            
-            self.metrics.cache_misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            
-            // Try primary backend first
-            let result = self.get_from_backend(&self.primary_backend, key, ctx).await;
-            
-            match result {
-                Ok(Some(entity)) => {
-                    // Cache the result
-                    self.cache_entity(key, &entity).await;
-                    Ok(Some(entity))
-                }
-                Ok(None) => Ok(None),
-                Err(e) => {
-                    // Try fallback backends
-                    for backend in &self.fallback_backends {
-                        if let Ok(Some(entity)) = self.get_from_backend(backend, key, ctx).await {
-                            self.cache_entity(key, &entity).await;
-                            return Ok(Some(entity));
-                        }
+            Ok(None) => Ok(None),
+            Err(e) => {
+                println!("[StorageManager] Primary backend failed for key {}: {}", key, e);
+                
+                // Try fallback backends
+                for backend in &self.fallback_backends {
+                    if let Ok(Some(entity)) = self.get_from_backend(backend, key, ctx).await {
+                        self.cache_entity(key, &entity).await;
+                        return Ok(Some(entity));
                     }
-                    
-                    self.metrics.errors_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    Err(e)
                 }
+                
+                self.metrics.errors_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Err(e)
             }
-        }).await
+        }
     }
     
-    /// Put an entity with security and sync
+    /// Put an entity with sync
     pub async fn put(&self, key: &str, mut entity: StoredEntity, ctx: &StorageContext) -> Result<(), StorageError> {
-        instrument("storage_put", || async {
-            self.metrics.operations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            
-            // Security check
-            self.authorize_write(ctx, key, &entity).await?;
-            
-            // Update metadata
-            entity.updated_at = Utc::now();
-            entity.updated_by = ctx.user_id.clone();
-            entity.version += 1;
-            entity.sync_status = SyncStatus::Pending;
-            
-            // Store in primary backend
-            let adapter = self.adapters.get(&self.primary_backend)
-                .ok_or_else(|| StorageError::BackendError {
-                    backend: self.primary_backend.clone(),
-                    error: "Adapter not found".to_string(),
-                })?;
-            
-            adapter.put(key, entity.clone(), ctx).await?;
-            
-            // Update cache
-            self.cache_entity(key, &entity).await;
-            
-            // Trigger sync if enabled
-            let policy = current_policy();
-            if policy.database.auto_optimize {
-                // Would trigger sync here
-                tracing::debug!(key = %key, "Entity queued for sync");
-            }
-            
-            Ok(())
-        }).await
+        self.metrics.operations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        
+        // Update metadata
+        entity.updated_at = Utc::now();
+        entity.updated_by = ctx.user_id.clone();
+        entity.version += 1;
+        entity.sync_status = SyncStatus::Pending;
+        
+        // Store in primary backend
+        let adapter = self.adapters.get(&self.primary_backend)
+            .ok_or_else(|| StorageError::BackendError {
+                backend: self.primary_backend.clone(),
+                error: "Adapter not found".to_string(),
+            })?;
+        
+        adapter.put(key, entity.clone(), ctx).await?;
+        
+        // Update cache
+        self.cache_entity(key, &entity).await;
+        
+        println!("[StorageManager] Entity stored: {}", key);
+        
+        Ok(())
     }
     
     /// Delete an entity
     pub async fn delete(&self, key: &str, ctx: &StorageContext) -> Result<(), StorageError> {
-        instrument("storage_delete", || async {
-            self.metrics.operations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            
-            // Security check
-            self.authorize_delete(ctx, key).await?;
-            
-            // Delete from primary backend
-            let adapter = self.adapters.get(&self.primary_backend)
-                .ok_or_else(|| StorageError::BackendError {
-                    backend: self.primary_backend.clone(),
-                    error: "Adapter not found".to_string(),
-                })?;
-            
-            adapter.delete(key, ctx).await?;
-            
-            // Remove from cache
-            self.evict_from_cache(key).await;
-            
-            Ok(())
-        }).await
+        self.metrics.operations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        
+        // Delete from primary backend
+        let adapter = self.adapters.get(&self.primary_backend)
+            .ok_or_else(|| StorageError::BackendError {
+                backend: self.primary_backend.clone(),
+                error: "Adapter not found".to_string(),
+            })?;
+        
+        adapter.delete(key, ctx).await?;
+        
+        // Remove from cache
+        self.evict_from_cache(key).await;
+        
+        Ok(())
     }
     
-    /// Query entities with security filtering
+    /// Query entities
     pub async fn query(&self, query: &StorageQuery, ctx: &StorageContext) -> Result<Vec<StoredEntity>, StorageError> {
-        instrument("storage_query", || async {
-            self.metrics.operations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            
-            // Security check
-            self.authorize_query(ctx, query).await?;
-            
-            // Query primary backend
-            let adapter = self.adapters.get(&self.primary_backend)
-                .ok_or_else(|| StorageError::BackendError {
-                    backend: self.primary_backend.clone(),
-                    error: "Adapter not found".to_string(),
-                })?;
-            
-            let mut results = adapter.query(query, ctx).await?;
-            
-            // Apply security filtering
-            results = self.filter_results_by_security(results, ctx).await?;
-            
-            Ok(results)
-        }).await
+        self.metrics.operations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        
+        // Query primary backend
+        let adapter = self.adapters.get(&self.primary_backend)
+            .ok_or_else(|| StorageError::BackendError {
+                backend: self.primary_backend.clone(),
+                error: "Adapter not found".to_string(),
+            })?;
+        
+        let results = adapter.query(query, ctx).await?;
+        
+        Ok(results)
     }
     
     /// Get storage statistics
@@ -432,9 +399,6 @@ impl StorageManager {
         
         // Evict old entries if cache is too large
         if cache.len() > 1000 {
-            // Clone the entries (keys + values) so we don't hold references into the map
-            // while mutating it below. This avoids the borrow-checker error when
-            // attempting to remove while iterating.
             let mut entries: Vec<(String, CachedEntity)> = cache.iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
@@ -451,32 +415,6 @@ impl StorageManager {
     async fn evict_from_cache(&self, key: &str) {
         let mut cache = self.cache.write().await;
         cache.remove(key);
-    }
-    
-    async fn authorize_read(&self, ctx: &StorageContext, key: &str) -> Result<(), StorageError> {
-        // Implement security authorization
-        // This would integrate with your SecurityManager
-        Ok(())
-    }
-    
-    async fn authorize_write(&self, ctx: &StorageContext, key: &str, entity: &StoredEntity) -> Result<(), StorageError> {
-        // Implement security authorization
-        Ok(())
-    }
-    
-    async fn authorize_delete(&self, ctx: &StorageContext, key: &str) -> Result<(), StorageError> {
-        // Implement security authorization
-        Ok(())
-    }
-    
-    async fn authorize_query(&self, ctx: &StorageContext, query: &StorageQuery) -> Result<(), StorageError> {
-        // Implement security authorization
-        Ok(())
-    }
-    
-    async fn filter_results_by_security(&self, results: Vec<StoredEntity>, ctx: &StorageContext) -> Result<Vec<StoredEntity>, StorageError> {
-        // Filter results based on security clearance
-        Ok(results) // Simplified for now
     }
 }
 
@@ -499,7 +437,7 @@ impl Default for StorageConfig {
             cache_ttl_seconds: 300,
             max_cache_size: 1000,
             enable_compression: false,
-            enable_encryption: true,
+            enable_encryption: false, // Simplified for community
         }
     }
 }

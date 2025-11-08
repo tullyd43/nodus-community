@@ -37,6 +37,14 @@ pub struct AppState {
     pub config: AppConfig,
     pub sessions: Arc<RwLock<HashMap<Uuid, SessionInfo>>>,
     pub plugins: Arc<RwLock<Vec<String>>>, // List of loaded plugin IDs
+    
+    // Core components for grid functionality
+    pub storage: Arc<crate::storage::StorageManager>,
+    pub action_dispatcher: Arc<crate::action_dispatcher::ActionDispatcher>,
+    pub async_orchestrator: Arc<crate::async_orchestrator::AsyncOrchestrator>,
+    
+    // Tracking for active async operations
+    pub active_async_operations: Arc<RwLock<HashMap<String, crate::async_orchestrator::OperationRunner>>>,
 }
 
 /// Basic app configuration
@@ -70,6 +78,11 @@ impl AppState {
             plugin_access_mode: format!("{:?}", plugin_access_mode),
         };
 
+        // Initialize core components
+        let storage = Arc::new(crate::storage::StorageManager::new());
+        let action_dispatcher = Arc::new(crate::action_dispatcher::ActionDispatcher::new().await?);
+        let async_orchestrator = Arc::new(crate::async_orchestrator::AsyncOrchestrator::new().await?);
+
         Ok(Self {
             license_tier,
             plugin_access_mode,
@@ -77,6 +90,10 @@ impl AppState {
             config,
             sessions: Arc::new(RwLock::new(HashMap::new())),
             plugins: Arc::new(RwLock::new(Vec::new())),
+            storage,
+            action_dispatcher,
+            async_orchestrator,
+            active_async_operations: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -128,10 +145,7 @@ impl AppState {
         match self.license_tier {
             LicenseTier::Community => {
                 // Community has only a basic feature set; return false for premium features
-                match feature {
-                    "ai" | "enterprise" => false,
-                    _ => true,
-                }
+                !matches!(feature, "ai" | "enterprise")
             }
             _ => true,
         }
@@ -244,4 +258,17 @@ pub enum AppStateError {
 
     #[error("Initialization failed: {reason}")]
     InitializationFailed { reason: String },
+}
+
+// Convert lower-level errors into AppStateError when used with `?` in initializers.
+impl From<crate::action_dispatcher::ActionError> for AppStateError {
+    fn from(e: crate::action_dispatcher::ActionError) -> Self {
+        AppStateError::InitializationFailed { reason: format!("ActionDispatcher error: {}", e) }
+    }
+}
+
+impl From<crate::async_orchestrator::OrchestrationError> for AppStateError {
+    fn from(e: crate::async_orchestrator::OrchestrationError) -> Self {
+        AppStateError::InitializationFailed { reason: format!("Orchestrator error: {}", e) }
+    }
 }

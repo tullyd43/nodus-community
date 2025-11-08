@@ -18,7 +18,7 @@ pub async fn get_system_status(state: AppStateType) -> Result<Value, String> {
     let app_state = state.read().await;
     let status = app_state.get_system_status().await;
 
-    Ok(serde_json::to_value(status).map_err(|e| e.to_string())?)
+    serde_json::to_value(status).map_err(|e| e.to_string())
 }
 
 /// List loaded plugins

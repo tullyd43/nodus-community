@@ -1,103 +1,189 @@
 /**
  * @file AsyncOrchestrator.js
- * @description Policy-aware asynchronous orchestration kernel with pluggable instrumentation hooks.
+ * @description Simplified proxy that routes async operations to Rust backend via Tauri
  */
-
-const DEFAULT_LABEL = "async.operation";
-const DEFAULT_EVENT_TYPE = "ASYNC_OPERATION";
-const DEFAULT_ACTOR = "system";
-const DEFAULT_TENANT = "shared";
-const RUN_ID_PREFIX = "async";
-
-const HOOK_SEQUENCE = ["before", "after", "error", "skip", "settled"];
-const DEFAULT_PLUGIN_TIMEOUT_MS = 100;
-
-const STATUS = Object.freeze({
-	PENDING: "pending",
-	SUCCESS: "success",
-	ERROR: "error",
-	SKIPPED: "skipped",
-});
-
-/**
- * @typedef {object} AsyncClassification
- * @property {string} level
- * @property {Iterable<string>} [compartments]
- */
+import { invoke } from '@tauri-apps/api/core';
 
 /**
  * @typedef {object} AsyncRunOptions
  * @property {string} [id] Optional stable identifier for the run.
  * @property {string} [label] Friendly label used for metrics and forensic payloads.
- * @property {string} [eventType] Overrides the forensic event type (default: ASYNC_OPERATION).
- * @property {Record<string, any>} [meta] Free-form metadata for plugins.
- * @property {AsyncClassification|string} [classification] Security classification metadata.
  * @property {string} [actorId] Identity of the actor performing the operation.
  * @property {string} [tenantId] Tenant or workspace identifier.
- * @property {import("../../platform/state/HybridStateManager.js").default} [stateManager]
- * State manager reference for legacy event emission.
- * @property {Array<AsyncOrchestratorPlugin>} [plugins] Optional per-run plugins.
- * @property {number} [metricsSampleRate] Sampling hint for metrics plugins (0-1).
- * @property {Record<string, any>} [policyOverrides] Optional policy overrides.
+ * @property {string} [classification] Security classification metadata.
+ * @property {number} [timeout] Operation timeout in milliseconds.
+ * @property {Record<string, any>} [meta] Free-form metadata.
  */
 
 /**
- * @typedef {object} AsyncOrchestratorPlugin
- * @property {string} name Unique plugin name.
- * @property {number} [priority] Execution priority; lower values run earlier.
- * @property {(context: AsyncRunContext) => boolean|Promise<boolean>} [supports] Optional gate to skip plugin at runtime.
- * @property {(context: AsyncRunContext) => void|Promise<void>} [before]
- * @property {(context: AsyncRunContext, result?:any) => void|Promise<void>} [after]
- * @property {(context: AsyncRunContext, error?:Error) => void|Promise<void>} [error]
- * @property {(context: AsyncRunContext) => void|Promise<void>} [skip]
- * @property {(context: AsyncRunContext) => void|Promise<void>} [settled]
+ * Simple operation runner that proxies to Rust backend
  */
+class OperationRunner {
+    constructor(operationName, orchestrator, options = {}) {
+        this.operationName = operationName;
+        this.orchestrator = orchestrator;
+        this.options = options;
+    }
 
-/**
- * @typedef {ReturnType<typeof createExecutionContext>} AsyncRunContext
- */
-
-/**
- * Generates a unique identifier for an orchestrated run.
- * @param {string} label
- * @returns {string}
- */
-function createRunId(label) {
-	const base = label || DEFAULT_LABEL;
-	if (
-		typeof crypto !== "undefined" &&
-		typeof crypto.randomUUID === "function"
-	)
-		return crypto.randomUUID();
-	const suffix = Math.random().toString(16).slice(2, 10);
-	return `${RUN_ID_PREFIX}-${base}-${Date.now()}-${suffix}`;
+    /**
+     * Execute the operation through Rust backend
+     * @param {Function} operation - Sync function that returns a Promise
+     * @param {AsyncRunOptions} [options] - Additional options
+     * @returns {Promise<any>}
+     */
+    async run(operation, options = {}) {
+        const mergedOptions = { ...this.options, ...options };
+        return this.orchestrator.run(operation, {
+            label: this.operationName,
+            ...mergedOptions
+        });
+    }
 }
 
 /**
- * Produces a monotonic-ish time source suitable for measuring durations.
- * @returns {number}
+ * @class AsyncOrchestrator
+ * @description Simplified orchestrator that routes operations to Rust backend
  */
-function defaultNow() {
-	if (
-		typeof globalThis !== "undefined" &&
-		globalThis.performance &&
-		typeof globalThis.performance.now === "function"
-	) {
-		return globalThis.performance.now();
-	}
-	return Date.now();
-}
+export class AsyncOrchestrator {
+    /** @type {AsyncOrchestrator|null} */
+    static #globalInstance = null;
 
-/**
- * Normalizes classification metadata into a canonical structure.
- * @param {AsyncClassification|string|undefined|null} input
- * @returns {{ level:string, compartments:Set<string> }}
- */
-function normalizeClassification(input) {
-	if (!input) {
-		return {
-			level: DEFAULT_EVENT_TYPE,
-			compartments: new Set(),
+    constructor(deps = {}) {
+        // Simplified constructor - no complex plugin management
+        this.stateManager = deps.stateManager;
+    }
+
+    /**
+     * Create an operation runner (maintains same API as before)
+     * @param {string} operationName
+     * @param {AsyncRunOptions} [options]
+     * @returns {OperationRunner}
+     */
+    createRunner(operationName, options = {}) {
+        return new OperationRunner(operationName, this, options);
+    }
+
+    /**
+     * Execute operation through Rust backend (maintains same API as before)
+     * @param {Function} operation - Sync function that returns a Promise
+     * @param {AsyncRunOptions} [options]
+     * @returns {Promise<any>}
+     */
+    async run(operation, options = {}) {
+        const operationId = crypto.randomUUID();
+        const label = options.label || 'async.operation';
+        
+        try {
+            // Create operation context for Rust
+            const operationContext = {
+                operation_id: operationId,
+                operation_name: label,
+                user_id: options.actorId || 'anonymous',
+                classification: this.#normalizeClassification(options.classification),
+                timeout_ms: options.timeout || 30000,
+                metadata: {
+                    label,
+                    tenant_id: options.tenantId || 'default',
+                    ...options.meta
+                }
+            };
+
+            // Start the operation in Rust
+            await invoke('start_async_operation', { context: operationContext });
+
+            // Execute the JavaScript operation
+            const result = await operation();
+
+            // Complete the operation in Rust
+            await invoke('complete_async_operation', { 
+                operationId, 
+                success: true, 
+                result: this.#serializeResult(result) 
+            });
+
+            // Emit state manager event if available
+            if (this.stateManager?.emit) {
+                this.stateManager.emit('operation.completed', {
+                    operationId,
+                    label,
+                    result,
+                    success: true
+                });
+            }
+
+            return result;
+        } catch (error) {
+            // Record error in Rust
+            try {
+                await invoke('complete_async_operation', { 
+                    operationId, 
+                    success: false, 
+                    error: error.message 
+                });
+            } catch (rustError) {
+                console.warn('[AsyncOrchestrator] Failed to record error in Rust:', rustError);
+            }
+
+            // Emit error event if state manager available
+            if (this.stateManager?.emit) {
+                this.stateManager.emit('operation.completed', {
+                    operationId,
+                    label,
+                    error: error.message,
+                    success: false
+                });
+            }
+
+            throw error;
+        }
+    }
+
+    /**
+     * Normalize classification for Rust backend
+     * @private
+     */
+    #normalizeClassification(classification) {
+        if (!classification) return 'PUBLIC';
+        if (typeof classification === 'string') return classification.toUpperCase();
+        return 'PUBLIC';
+    }
+
+    /**
+     * Serialize result for Rust backend (simplified)
+     * @private
+     */
+    #serializeResult(result) {
+        try {
+            return JSON.stringify(result);
+        } catch {
+            return String(result);
+        }
+    }
+
+    /**
+     * Static methods for compatibility
+     */
+    static registerGlobal(instance) {
+        AsyncOrchestrator.#globalInstance = instance;
+        return instance;
+    }
+
+    static getGlobal() {
+        return AsyncOrchestrator.#globalInstance;
+    }
+
+    /**
+     * Simplified plugin management (no-op for compatibility)
+     */
+    getPlugins() {
+        return [];
+    }
+
+    addPlugin() {
+        // No-op - plugins are handled in Rust
+        console.warn('[AsyncOrchestrator] Plugin registration disabled - handled by Rust backend');
+    }
+}
 		};
 	}
 	if (typeof input === "string") {

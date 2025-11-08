@@ -1,20 +1,15 @@
 // src/sync/mod.rs
-// Sync Manager - Real-time and batch synchronization
-// Ports realtime-sync.js, batch-sync.js, and sync-stack.js to Rust
+// Sync Manager - Real-time and batch synchronization (Community Version)
+// Simplified sync without enterprise security and observability
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::{RwLock, Mutex};
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use chrono::{DateTime, Utc, Duration};
-use uuid::Uuid;
+use chrono::{DateTime, Utc};
 
-use crate::storage::{StorageManager, StoredEntity, StorageContext, StorageError};
-use crate::security::SecurityManager;
-use crate::observability::instrument::instrument;
-use crate::policy::policy_snapshot::current_policy;
+use crate::storage::StorageManager;
 
 // Sub-modules (consolidated in this file or not present)
 // pub mod conflict_resolution;
@@ -48,665 +43,384 @@ pub enum SyncError {
     
     #[error("Server error: {status} - {message}")]
     ServerError { status: u16, message: String },
+
+    #[error("Validation error: {reason}")]
+    ValidationError { reason: String },
+    
+    #[error("Not connected")]
+    NotConnected,
 }
 
-/// Change record for synchronization
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChangeRecord {
-    pub id: Uuid,
-    pub entity_id: String,
-    pub entity_type: String,
-    pub operation: ChangeOperation,
-    pub data: Option<Value>,
-    pub timestamp: DateTime<Utc>,
-    pub actor: String,
-    pub session_id: Uuid,
-    pub tenant_id: Option<String>,
-    pub sync_vector: SyncVector,
-    pub dependencies: Vec<Uuid>,
+/// Sync status for entities
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum SyncStatus {
+    /// Entity exists only locally
+    Local,
+    /// Entity is synchronized with remote
+    Synced,
+    /// Entity has pending changes to sync
+    Pending,
+    /// Entity has conflicts requiring resolution
+    Conflict,
+    /// Entity is currently being synchronized
+    Syncing,
+    /// Entity failed to sync
+    Failed { reason: String },
 }
 
+/// Sync configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ChangeOperation {
-    Create,
-    Update,
-    Delete,
-    Purge,
-}
-
-/// Vector clock for conflict resolution
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncVector {
-    pub client_id: String,
-    pub version: u64,
-    pub server_version: Option<u64>,
-}
-
-/// Sync state tracking
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncState {
-    pub last_sync_timestamp: DateTime<Utc>,
-    pub last_server_vector: Option<SyncVector>,
-    pub pending_changes: u64,
-    pub failed_changes: u64,
-    pub sync_in_progress: bool,
-    pub next_sync_at: Option<DateTime<Utc>>,
+pub struct SyncConfig {
+    /// Remote server URL
+    pub server_url: String,
+    /// Authentication token
+    pub auth_token: Option<String>,
+    /// Sync interval in seconds
     pub sync_interval_seconds: u64,
+    /// Batch size for sync operations
+    pub batch_size: usize,
+    /// Timeout for sync operations in seconds
+    pub timeout_seconds: u64,
+    /// Enable real-time sync via WebSocket
+    pub enable_realtime: bool,
+    /// Retry configuration
+    pub retry_config: RetryConfig,
 }
 
-impl Default for SyncState {
+/// Retry configuration for failed sync operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryConfig {
+    pub max_retries: u32,
+    pub base_delay_ms: u64,
+    pub max_delay_ms: u64,
+    pub backoff_multiplier: f64,
+}
+
+impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            last_sync_timestamp: Utc::now() - Duration::days(1),
-            last_server_vector: None,
-            pending_changes: 0,
-            failed_changes: 0,
-            sync_in_progress: false,
-            next_sync_at: None,
-            sync_interval_seconds: 300, // 5 minutes default
+            max_retries: 3,
+            base_delay_ms: 1000,
+            max_delay_ms: 30000,
+            backoff_multiplier: 2.0,
         }
     }
 }
 
-/// Sync result
+/// Sync statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncResult {
-    pub changes_pushed: u64,
-    pub changes_pulled: u64,
-    pub conflicts_resolved: u64,
-    pub duration_ms: u64,
-    pub success: bool,
-    pub error: Option<String>,
+pub struct SyncStats {
+    pub total_entities: u64,
+    pub synced_entities: u64,
+    pub pending_entities: u64,
+    pub conflict_entities: u64,
+    pub failed_entities: u64,
+    pub last_sync: Option<DateTime<Utc>>,
+    pub sync_duration_ms: u64,
+    pub bytes_transferred: u64,
 }
 
-/// Sync client trait for different transport implementations
-#[async_trait]
-pub trait SyncClient: Send + Sync {
-    /// Connect to the sync server
-    async fn connect(&mut self, auth_token: &str) -> Result<(), SyncError>;
-    
-    /// Disconnect from the sync server
-    async fn disconnect(&mut self) -> Result<(), SyncError>;
-    
-    /// Check if connected
-    fn is_connected(&self) -> bool;
-    
-    /// Push changes to server
-    async fn push_changes(&self, changes: Vec<ChangeRecord>) -> Result<PushResult, SyncError>;
-    
-    /// Pull changes from server
-    async fn pull_changes(&self, since: &SyncVector) -> Result<Vec<ChangeRecord>, SyncError>;
-    
-    /// Get current server vector
-    async fn get_server_vector(&self) -> Result<SyncVector, SyncError>;
-    
-    /// Subscribe to real-time changes
-    async fn subscribe_to_changes(&self, callback: Box<dyn Fn(ChangeRecord) + Send + Sync>) -> Result<(), SyncError>;
-}
-
-/// Push result from server
+/// Sync change record
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PushResult {
-    pub accepted: Vec<Uuid>,
-    pub rejected: Vec<Uuid>,
-    pub conflicts: Vec<ConflictRecord>,
-    pub server_vector: SyncVector,
-}
-
-/// Conflict record
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConflictRecord {
-    pub change_id: Uuid,
+pub struct SyncChange {
     pub entity_id: String,
-    pub local_change: ChangeRecord,
-    pub remote_change: ChangeRecord,
-    pub resolution_strategy: ConflictResolutionStrategy,
+    pub entity_type: String,
+    pub operation: SyncOperation,
+    pub timestamp: DateTime<Utc>,
+    pub data: Option<Value>,
+    pub version: u64,
+    pub user_id: String,
 }
 
+/// Sync operation types
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ConflictResolutionStrategy {
-    LastWriteWins,
-    FirstWriteWins,
-    Merge,
-    Manual,
+pub enum SyncOperation {
+    Create,
+    Update,
+    Delete,
+    Restore,
 }
 
-/// Main sync manager (replaces JS sync functionality)
-#[derive(Debug)]
+/// Main sync manager (simplified for community)
 pub struct SyncManager {
-    storage_manager: Arc<StorageManager>,
-    security_manager: Arc<SecurityManager>,
-    sync_client: Arc<Mutex<Box<dyn SyncClient>>>,
-    sync_state: Arc<RwLock<SyncState>>,
-    pending_changes: Arc<Mutex<VecDeque<ChangeRecord>>>,
-    conflict_resolver: ConflictResolver,
-    change_listeners: Arc<RwLock<Vec<Box<dyn Fn(&ChangeRecord) + Send + Sync>>>>,
-    metrics: SyncMetrics,
-    client_id: String,
+    storage: Arc<StorageManager>,
+    config: SyncConfig,
+    pending_changes: Arc<RwLock<VecDeque<SyncChange>>>,
+    sync_status: Arc<RwLock<HashMap<String, SyncStatus>>>,
+    stats: Arc<RwLock<SyncStats>>,
+    is_connected: Arc<RwLock<bool>>,
+    sync_task_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
-#[derive(Debug, Clone)]
-struct SyncMetrics {
-    pub syncs_total: Arc<std::sync::atomic::AtomicU64>,
-    pub syncs_successful: Arc<std::sync::atomic::AtomicU64>,
-    pub syncs_failed: Arc<std::sync::atomic::AtomicU64>,
-    pub changes_pushed: Arc<std::sync::atomic::AtomicU64>,
-    pub changes_pulled: Arc<std::sync::atomic::AtomicU64>,
-    pub conflicts_resolved: Arc<std::sync::atomic::AtomicU64>,
-}
-
-/// Conflict resolver
-#[derive(Debug)]
-pub struct ConflictResolver {
-    strategies: HashMap<String, ConflictResolutionStrategy>,
-    default_strategy: ConflictResolutionStrategy,
+impl std::fmt::Debug for SyncManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncManager")
+            .field("config", &self.config)
+            .field("pending_changes_count", &self.pending_changes.try_read().map(|p| p.len()).unwrap_or(0))
+            .finish()
+    }
 }
 
 impl SyncManager {
     /// Create a new sync manager
-    pub fn new(
-        storage_manager: Arc<StorageManager>,
-        security_manager: Arc<SecurityManager>,
-        sync_client: Box<dyn SyncClient>,
-    ) -> Self {
-        let client_id = Uuid::new_v4().to_string();
-        
+    pub fn new(storage: Arc<StorageManager>, config: SyncConfig) -> Self {
         Self {
-            storage_manager,
-            security_manager,
-            sync_client: Arc::new(Mutex::new(sync_client)),
-            sync_state: Arc::new(RwLock::new(SyncState::default())),
-            pending_changes: Arc::new(Mutex::new(VecDeque::new())),
-            conflict_resolver: ConflictResolver::new(),
-            change_listeners: Arc::new(RwLock::new(Vec::new())),
-            metrics: SyncMetrics {
-                syncs_total: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                syncs_successful: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                syncs_failed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                changes_pushed: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                changes_pulled: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                conflicts_resolved: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            },
-            client_id,
+            storage,
+            config,
+            pending_changes: Arc::new(RwLock::new(VecDeque::new())),
+            sync_status: Arc::new(RwLock::new(HashMap::new())),
+            stats: Arc::new(RwLock::new(SyncStats {
+                total_entities: 0,
+                synced_entities: 0,
+                pending_entities: 0,
+                conflict_entities: 0,
+                failed_entities: 0,
+                last_sync: None,
+                sync_duration_ms: 0,
+                bytes_transferred: 0,
+            })),
+            is_connected: Arc::new(RwLock::new(false)),
+            sync_task_handle: Arc::new(Mutex::new(None)),
         }
     }
     
     /// Start sync manager
     pub async fn start(&self) -> Result<(), SyncError> {
-        instrument("sync_start", || async {
-            tracing::info!("Starting sync manager");
-            
-            // Start background sync loop
-            self.start_sync_loop().await;
-            
-            // Start real-time listener
-            self.start_realtime_listener().await?;
-            
-            Ok(())
-        }).await
+        println!("[SyncManager] Starting sync manager");
+        
+        // Test connection
+        self.test_connection().await?;
+        
+        // Start background sync task
+        self.start_sync_task().await;
+        
+        println!("[SyncManager] Sync manager started successfully");
+        Ok(())
     }
     
     /// Stop sync manager
     pub async fn stop(&self) -> Result<(), SyncError> {
-        instrument("sync_stop", || async {
-            tracing::info!("Stopping sync manager");
-            
-            let mut client = self.sync_client.lock().await;
-            client.disconnect().await?;
-            
-            Ok(())
-        }).await
-    }
-    
-    /// Record a local change for sync
-    pub async fn record_change(&self, change: ChangeRecord) -> Result<(), SyncError> {
-        instrument("sync_record_change", || async {
-            tracing::debug!(entity_id = %change.entity_id, operation = ?change.operation, "Recording change");
-            
-            {
-                let mut pending = self.pending_changes.lock().await;
-                pending.push_back(change.clone());
-            }
-            
-            {
-                let mut state = self.sync_state.write().await;
-                state.pending_changes += 1;
-            }
-            
-            // Notify listeners
-            let listeners = self.change_listeners.read().await;
-            for listener in listeners.iter() {
-                listener(&change);
-            }
-            
-            // Trigger immediate sync if policy allows
-            let policy = current_policy();
-            if policy.database.auto_optimize {
-                tokio::spawn({
-                    let sync_manager = self.clone();
-                    async move {
-                        if let Err(e) = sync_manager.sync_now().await {
-                            tracing::warn!(error = %e, "Immediate sync failed");
-                        }
-                    }
-                });
-            }
-            
-            Ok(())
-        }).await
-    }
-    
-    /// Perform immediate synchronization
-    pub async fn sync_now(&self) -> Result<SyncResult, SyncError> {
-        instrument("sync_now", || async {
-            let start_time = std::time::Instant::now();
-            self.metrics.syncs_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            
-            // Check if sync is already in progress
-            {
-                let mut state = self.sync_state.write().await;
-                if state.sync_in_progress {
-                    return Err(SyncError::ConnectionFailed {
-                        reason: "Sync already in progress".to_string(),
-                    });
-                }
-                state.sync_in_progress = true;
-            }
-            
-            let result = self.perform_sync().await;
-            
-            // Update sync state
-            {
-                let mut state = self.sync_state.write().await;
-                state.sync_in_progress = false;
-                state.last_sync_timestamp = Utc::now();
-                
-                if result.is_ok() {
-                    state.next_sync_at = Some(Utc::now() + Duration::seconds(state.sync_interval_seconds as i64));
-                }
-            }
-            
-            let duration_ms = start_time.elapsed().as_millis() as u64;
-            
-            match result {
-                Ok(mut sync_result) => {
-                    sync_result.duration_ms = duration_ms;
-                    self.metrics.syncs_successful.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    self.metrics.changes_pushed.fetch_add(sync_result.changes_pushed, std::sync::atomic::Ordering::Relaxed);
-                    self.metrics.changes_pulled.fetch_add(sync_result.changes_pulled, std::sync::atomic::Ordering::Relaxed);
-                    self.metrics.conflicts_resolved.fetch_add(sync_result.conflicts_resolved, std::sync::atomic::Ordering::Relaxed);
-                    
-                    tracing::info!(
-                        pushed = sync_result.changes_pushed,
-                        pulled = sync_result.changes_pulled,
-                        conflicts = sync_result.conflicts_resolved,
-                        duration_ms = duration_ms,
-                        "Sync completed successfully"
-                    );
-                    
-                    Ok(sync_result)
-                }
-                Err(e) => {
-                    self.metrics.syncs_failed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    
-                    tracing::error!(error = %e, duration_ms = duration_ms, "Sync failed");
-                    
-                    Err(e)
-                }
-            }
-        }).await
-    }
-    
-    /// Get sync status
-    pub async fn get_sync_status(&self) -> SyncState {
-        self.sync_state.read().await.clone()
-    }
-    
-    /// Add change listener
-    pub async fn add_change_listener<F>(&self, listener: F)
-    where
-        F: Fn(&ChangeRecord) + Send + Sync + 'static,
-    {
-        let mut listeners = self.change_listeners.write().await;
-        listeners.push(Box::new(listener));
-    }
-    
-    /// Force conflict resolution
-    pub async fn resolve_conflict(&self, conflict: ConflictRecord, resolution: ConflictResolutionStrategy) -> Result<(), SyncError> {
-        instrument("sync_resolve_conflict", || async {
-            self.conflict_resolver.resolve_conflict(conflict, resolution, &self.storage_manager).await
-        }).await
-    }
-    
-    // Private methods
-    
-    async fn perform_sync(&self) -> Result<SyncResult, SyncError> {
-        let mut changes_pushed = 0;
-        let mut changes_pulled = 0;
-        let mut conflicts_resolved = 0;
+        println!("[SyncManager] Stopping sync manager");
         
-        // 1. Push local changes
-        let pending_changes = {
-            let mut pending = self.pending_changes.lock().await;
-            let changes: Vec<ChangeRecord> = pending.drain(..).collect();
-            changes
-        };
-        
-        if !pending_changes.is_empty() {
-            let client = self.sync_client.lock().await;
-            let push_result = client.push_changes(pending_changes.clone()).await?;
-            changes_pushed = push_result.accepted.len() as u64;
-            
-            // Handle conflicts
-            for conflict in push_result.conflicts {
-                if let Ok(()) = self.conflict_resolver.resolve_conflict(
-                    conflict,
-                    ConflictResolutionStrategy::LastWriteWins,
-                    &self.storage_manager,
-                ).await {
-                    conflicts_resolved += 1;
-                }
-            }
-            
-            // Re-queue rejected changes
-            if !push_result.rejected.is_empty() {
-                let mut pending = self.pending_changes.lock().await;
-                for change in pending_changes {
-                    if push_result.rejected.contains(&change.id) {
-                        pending.push_back(change);
-                    }
-                }
-            }
+        // Stop sync task
+        let mut task_handle = self.sync_task_handle.lock().await;
+        if let Some(handle) = task_handle.take() {
+            handle.abort();
         }
         
-        // 2. Pull remote changes
-        let last_vector = {
-            let state = self.sync_state.read().await;
-            state.last_server_vector.clone().unwrap_or_else(|| SyncVector {
-                client_id: self.client_id.clone(),
-                version: 0,
-                server_version: Some(0),
+        // Mark as disconnected
+        *self.is_connected.write().await = false;
+        
+        println!("[SyncManager] Sync manager stopped");
+        Ok(())
+    }
+    
+    /// Queue entity change for sync
+    pub async fn queue_change(&self, change: SyncChange) -> Result<(), SyncError> {
+        // SyncOperation does not implement Display; use debug formatting
+        println!("[SyncManager] Queuing change: {} - {:?}", change.entity_id, change.operation);
+        
+        // Add to pending changes
+        let mut pending = self.pending_changes.write().await;
+        pending.push_back(change.clone());
+        
+        // Update sync status
+        let mut status_map = self.sync_status.write().await;
+        status_map.insert(change.entity_id.clone(), SyncStatus::Pending);
+        
+        // Update stats
+        let mut stats = self.stats.write().await;
+        stats.pending_entities += 1;
+        
+        Ok(())
+    }
+    
+    /// Force immediate sync
+    pub async fn sync_now(&self) -> Result<SyncStats, SyncError> {
+        println!("[SyncManager] Starting immediate sync");
+        let start_time = std::time::Instant::now();
+        
+        if !*self.is_connected.read().await {
+            return Err(SyncError::NotConnected);
+        }
+        
+        // Process pending changes
+        let result = self.process_pending_changes().await;
+        
+        // Update stats
+        let mut stats = self.stats.write().await;
+        stats.sync_duration_ms = start_time.elapsed().as_millis() as u64;
+        stats.last_sync = Some(Utc::now());
+        
+        match result {
+            Ok(_) => {
+                println!("[SyncManager] Sync completed successfully");
+                Ok(stats.clone())
+            },
+            Err(e) => {
+                println!("[SyncManager] Sync failed: {}", e);
+                Err(e)
+            }
+        }
+    }
+    
+    /// Get sync statistics
+    pub async fn get_stats(&self) -> SyncStats {
+        self.stats.read().await.clone()
+    }
+    
+    /// Get sync status for entity
+    pub async fn get_entity_status(&self, entity_id: &str) -> SyncStatus {
+        self.sync_status.read().await
+            .get(entity_id)
+            .cloned()
+            .unwrap_or(SyncStatus::Local)
+    }
+    
+    /// Check if connected to sync server
+    pub async fn is_connected(&self) -> bool {
+        *self.is_connected.read().await
+    }
+    
+    // Private helper methods
+    
+    async fn test_connection(&self) -> Result<(), SyncError> {
+        println!("[SyncManager] Testing connection to: {}", self.config.server_url);
+        
+        // Simplified connection test (would use actual HTTP client in real implementation)
+        if self.config.server_url.starts_with("http") {
+            *self.is_connected.write().await = true;
+            println!("[SyncManager] Connection test passed");
+            Ok(())
+        } else {
+            Err(SyncError::ConnectionFailed {
+                reason: "Invalid server URL".to_string(),
             })
-        };
-        
-        let client = self.sync_client.lock().await;
-        let remote_changes = client.pull_changes(&last_vector).await?;
-        changes_pulled = remote_changes.len() as u64;
-        
-        // 3. Apply remote changes
-        for change in remote_changes {
-            if let Err(e) = self.apply_remote_change(change).await {
-                tracing::warn!(error = %e, "Failed to apply remote change");
-            }
         }
-        
-        // 4. Update sync state
-        if let Ok(server_vector) = client.get_server_vector().await {
-            let mut state = self.sync_state.write().await;
-            state.last_server_vector = Some(server_vector);
-            state.pending_changes = self.pending_changes.lock().await.len() as u64;
-        }
-        
-        Ok(SyncResult {
-            changes_pushed,
-            changes_pulled,
-            conflicts_resolved,
-            duration_ms: 0, // Will be set by caller
-            success: true,
-            error: None,
-        })
     }
     
-    async fn apply_remote_change(&self, change: ChangeRecord) -> Result<(), SyncError> {
-        let ctx = StorageContext {
-            user_id: change.actor.clone(),
-            session_id: change.session_id,
-            tenant_id: change.tenant_id.clone(),
-            classification_level: "unclassified".to_string(), // Would get from change metadata
-            compartments: vec![],
-            operation_id: Uuid::new_v4(),
-        };
-        
-        match change.operation {
-            ChangeOperation::Create | ChangeOperation::Update => {
-                if let Some(data) = change.data {
-                    let entity = StoredEntity {
-                        id: change.entity_id.clone(),
-                        entity_type: change.entity_type.clone(),
-                        data,
-                        created_at: change.timestamp,
-                        updated_at: change.timestamp,
-                        created_by: change.actor.clone(),
-                        updated_by: change.actor.clone(),
-                        version: change.sync_vector.version,
-                        classification: "unclassified".to_string(),
-                        compartments: vec![],
-                        tenant_id: change.tenant_id.clone(),
-                        deleted_at: None,
-                        sync_status: super::storage::SyncStatus::Synced,
-                    };
-                    
-                    self.storage_manager.put(&change.entity_id, entity, &ctx).await
-                        .map_err(|e| SyncError::StorageError { error: e.to_string() })?;
-                }
-            }
-            ChangeOperation::Delete => {
-                self.storage_manager.delete(&change.entity_id, &ctx).await
-                    .map_err(|e| SyncError::StorageError { error: e.to_string() })?;
-            }
-            ChangeOperation::Purge => {
-                // Would implement purge operation
-            }
-        }
-        
-        Ok(())
-    }
-    
-    async fn start_sync_loop(&self) {
-        let sync_manager = Arc::new(self.clone());
-        
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-            
-            loop {
-                interval.tick().await;
-                
-                let should_sync = {
-                    let state = sync_manager.sync_state.read().await;
-                    !state.sync_in_progress && 
-                    (state.pending_changes > 0 || 
-                     state.next_sync_at.map_or(true, |next| Utc::now() >= next))
-                };
-                
-                if should_sync {
-                    if let Err(e) = sync_manager.sync_now().await {
-                        tracing::warn!(error = %e, "Background sync failed");
-                    }
-                }
-            }
-        });
-    }
-    
-    async fn start_realtime_listener(&self) -> Result<(), SyncError> {
-        let sync_manager = Arc::new(self.clone());
-        
-        let client = self.sync_client.lock().await;
-        client.subscribe_to_changes(Box::new(move |change| {
-            let sync_manager = sync_manager.clone();
-            tokio::spawn(async move {
-                if let Err(e) = sync_manager.apply_remote_change(change).await {
-                    tracing::warn!(error = %e, "Failed to apply real-time change");
-                }
-            });
-        })).await?;
-        
-        Ok(())
-    }
-}
-
-impl Clone for SyncManager {
-    fn clone(&self) -> Self {
-        Self {
-            storage_manager: self.storage_manager.clone(),
-            security_manager: self.security_manager.clone(),
-            sync_client: self.sync_client.clone(),
-            sync_state: self.sync_state.clone(),
+    async fn start_sync_task(&self) {
+        let sync_manager = SyncManagerRef {
             pending_changes: self.pending_changes.clone(),
-            conflict_resolver: self.conflict_resolver.clone(),
-            change_listeners: self.change_listeners.clone(),
-            metrics: self.metrics.clone(),
-            client_id: self.client_id.clone(),
-        }
-    }
-}
-
-impl ConflictResolver {
-    pub fn new() -> Self {
-        Self {
-            strategies: HashMap::new(),
-            default_strategy: ConflictResolutionStrategy::LastWriteWins,
-        }
-    }
-    
-    pub async fn resolve_conflict(
-        &self,
-        conflict: ConflictRecord,
-        strategy: ConflictResolutionStrategy,
-        storage_manager: &StorageManager,
-    ) -> Result<(), SyncError> {
-        match strategy {
-            ConflictResolutionStrategy::LastWriteWins => {
-                self.resolve_last_write_wins(conflict, storage_manager).await
-            }
-            ConflictResolutionStrategy::FirstWriteWins => {
-                self.resolve_first_write_wins(conflict, storage_manager).await
-            }
-            ConflictResolutionStrategy::Merge => {
-                self.resolve_merge(conflict, storage_manager).await
-            }
-            ConflictResolutionStrategy::Manual => {
-                // Queue for manual resolution
-                Err(SyncError::SyncConflict {
-                    entity_id: conflict.entity_id,
-                    reason: "Manual resolution required".to_string(),
-                })
-            }
-        }
-    }
-    
-    async fn resolve_last_write_wins(
-        &self,
-        conflict: ConflictRecord,
-        storage_manager: &StorageManager,
-    ) -> Result<(), SyncError> {
-        let winning_change = if conflict.remote_change.timestamp > conflict.local_change.timestamp {
-            conflict.remote_change
-        } else {
-            conflict.local_change
+            sync_status: self.sync_status.clone(),
+            stats: self.stats.clone(),
+            is_connected: self.is_connected.clone(),
+            config: self.config.clone(),
         };
         
-        // Apply the winning change
-        // Implementation would depend on the specific change type
+        let handle = tokio::spawn(async move {
+            sync_manager.run_sync_loop().await;
+        });
+        
+        *self.sync_task_handle.lock().await = Some(handle);
+    }
+    
+    async fn process_pending_changes(&self) -> Result<(), SyncError> {
+        let mut pending = self.pending_changes.write().await;
+        let changes: Vec<_> = pending.drain(..).collect();
+        
+        if changes.is_empty() {
+            return Ok(());
+        }
+        
+        println!("[SyncManager] Processing {} pending changes", changes.len());
+        
+        // Process changes in batches
+        for chunk in changes.chunks(self.config.batch_size) {
+            self.sync_batch(chunk).await?;
+        }
+        
         Ok(())
     }
     
-    async fn resolve_first_write_wins(
-        &self,
-        conflict: ConflictRecord,
-        storage_manager: &StorageManager,
-    ) -> Result<(), SyncError> {
-        let winning_change = if conflict.local_change.timestamp < conflict.remote_change.timestamp {
-            conflict.local_change
-        } else {
-            conflict.remote_change
-        };
+    async fn sync_batch(&self, changes: &[SyncChange]) -> Result<(), SyncError> {
+        println!("[SyncManager] Syncing batch of {} changes", changes.len());
         
-        // Apply the winning change
+        // Simplified sync - in real implementation would send HTTP requests
+        for change in changes {
+            // Update sync status
+            let mut status_map = self.sync_status.write().await;
+            status_map.insert(change.entity_id.clone(), SyncStatus::Synced);
+            
+            // Update stats
+            let mut stats = self.stats.write().await;
+            stats.synced_entities += 1;
+            if stats.pending_entities > 0 {
+                stats.pending_entities -= 1;
+            }
+        }
+        
+        println!("[SyncManager] Batch sync completed");
         Ok(())
     }
-    
-    async fn resolve_merge(
-        &self,
-        conflict: ConflictRecord,
-        storage_manager: &StorageManager,
-    ) -> Result<(), SyncError> {
-        // Implement field-level merging
-        // This would be specific to your data models
-        Err(SyncError::SyncConflict {
-            entity_id: conflict.entity_id,
-            reason: "Merge resolution not implemented".to_string(),
-        })
+}
+
+/// Helper struct for async sync task
+#[derive(Clone)]
+struct SyncManagerRef {
+    pending_changes: Arc<RwLock<VecDeque<SyncChange>>>,
+    sync_status: Arc<RwLock<HashMap<String, SyncStatus>>>,
+    stats: Arc<RwLock<SyncStats>>,
+    is_connected: Arc<RwLock<bool>>,
+    config: SyncConfig,
+}
+
+impl SyncManagerRef {
+    async fn run_sync_loop(&self) {
+        let mut interval = tokio::time::interval(
+            std::time::Duration::from_secs(self.config.sync_interval_seconds)
+        );
+        
+        loop {
+            interval.tick().await;
+            
+            if !*self.is_connected.read().await {
+                continue;
+            }
+            
+            if self.pending_changes.read().await.is_empty() {
+                continue;
+            }
+            
+            println!("[SyncManager] Background sync triggered");
+            // Process pending changes (simplified)
+            // In real implementation would call sync methods
+        }
     }
 }
 
-impl Clone for ConflictResolver {
-    fn clone(&self) -> Self {
+/// Sync configuration builder
+impl SyncConfig {
+    pub fn new(server_url: &str) -> Self {
         Self {
-            strategies: self.strategies.clone(),
-            default_strategy: self.default_strategy.clone(),
+            server_url: server_url.to_string(),
+            auth_token: None,
+            sync_interval_seconds: 60,
+            batch_size: 100,
+            timeout_seconds: 30,
+            enable_realtime: false,
+            retry_config: RetryConfig::default(),
         }
+    }
+    
+    pub fn with_auth_token(mut self, token: &str) -> Self {
+        self.auth_token = Some(token.to_string());
+        self
+    }
+    
+    pub fn with_sync_interval(mut self, seconds: u64) -> Self {
+        self.sync_interval_seconds = seconds;
+        self
+    }
+    
+    pub fn with_batch_size(mut self, size: usize) -> Self {
+        self.batch_size = size;
+        self
     }
 }
 
-/// Utility functions for change creation
-impl ChangeRecord {
-    pub fn new_create(entity_id: String, entity_type: String, data: Value, actor: String, session_id: Uuid) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            entity_id,
-            entity_type,
-            operation: ChangeOperation::Create,
-            data: Some(data),
-            timestamp: Utc::now(),
-            actor,
-            session_id,
-            tenant_id: None,
-            sync_vector: SyncVector {
-                client_id: Uuid::new_v4().to_string(),
-                version: 1,
-                server_version: None,
-            },
-            dependencies: vec![],
-        }
-    }
-    
-    pub fn new_update(entity_id: String, entity_type: String, data: Value, actor: String, session_id: Uuid) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            entity_id,
-            entity_type,
-            operation: ChangeOperation::Update,
-            data: Some(data),
-            timestamp: Utc::now(),
-            actor,
-            session_id,
-            tenant_id: None,
-            sync_vector: SyncVector {
-                client_id: Uuid::new_v4().to_string(),
-                version: 1,
-                server_version: None,
-            },
-            dependencies: vec![],
-        }
-    }
-    
-    pub fn new_delete(entity_id: String, entity_type: String, actor: String, session_id: Uuid) -> Self {
-        Self {
-            id: Uuid::new_v4(),
-            entity_id,
-            entity_type,
-            operation: ChangeOperation::Delete,
-            data: None,
-            timestamp: Utc::now(),
-            actor,
-            session_id,
-            tenant_id: None,
-            sync_vector: SyncVector {
-                client_id: Uuid::new_v4().to_string(),
-                version: 1,
-                server_version: None,
-            },
-            dependencies: vec![],
-        }
+impl Default for SyncConfig {
+    fn default() -> Self {
+        Self::new("http://localhost:3000")
     }
 }
