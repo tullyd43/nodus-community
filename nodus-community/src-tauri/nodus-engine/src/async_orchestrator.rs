@@ -9,6 +9,14 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use std::time::{Duration, Instant};
 
+/// Basic operation context used by AppState and plugin system for simple async operations
+#[derive(Debug, Clone)]
+pub struct BasicOperationContext {
+    pub operation_name: String,
+    pub user_id: String,
+    pub session_id: Uuid,
+}
+
 /// Async Orchestrator - Simplified for community version
 #[derive(Debug)]
 pub struct AsyncOrchestrator {
@@ -44,6 +52,7 @@ pub struct OperationRunner {
 }
 
 /// Active operation tracking (simplified)
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ActiveOperation {
     operation_id: Uuid,
@@ -65,6 +74,7 @@ pub enum OperationStatus {
 }
 
 /// Circuit breaker (simplified)
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct CircuitBreaker {
     name: String,
@@ -76,6 +86,7 @@ struct CircuitBreaker {
 }
 
 /// Circuit breaker states
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 enum CircuitBreakerState {
     Closed,
@@ -94,7 +105,7 @@ pub struct RetryPolicy {
 
 /// Operation metrics (simplified)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct OperationMetrics {
+pub struct OperationMetrics {
     total_executions: u64,
     successful_executions: u64,
     failed_executions: u64,
@@ -105,6 +116,7 @@ struct OperationMetrics {
 }
 
 /// Resource monitor (simplified)
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ResourceMonitor {
     max_concurrent_operations: usize,
@@ -314,6 +326,30 @@ impl AsyncOrchestrator {
     /// Get active operation count
     pub async fn get_active_operation_count(&self) -> usize {
         self.active_operations.read().await.len()
+    }
+
+    /// Run a small async operation (community helper) and record basic metrics.
+    /// This accepts a future which returns Result<String, String> to keep the
+    /// community API surface simple and avoid deep generics in state_mod.
+    pub async fn run_operation<Fut>(&self, operation_name: &str, _user_id: &str, operation: Fut) -> Result<String, OrchestrationError>
+    where
+        Fut: std::future::Future<Output = Result<String, String>> + Send,
+    {
+        let start = Instant::now();
+
+        // Execute the provided future
+        match operation.await {
+            Ok(result) => {
+                let duration = start.elapsed();
+                self.record_success(operation_name, duration).await;
+                Ok(result)
+            }
+            Err(e) => {
+                let duration = start.elapsed();
+                self.record_failure(operation_name, duration).await;
+                Err(OrchestrationError::OperationFailed { message: e })
+            }
+        }
     }
 }
 

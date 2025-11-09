@@ -274,12 +274,27 @@ impl ActionDispatcher {
         
         // Find and execute action handler
         let handlers = self.action_handlers.read().await;
-        let handler = handlers
-            .get(&action.action_type)
-            .ok_or_else(|| ActionError::HandlerNotFound {
-                action_type: action.action_type.clone(),
-            })?;
-        
+
+        // Exact match first
+        let handler_opt: Option<&Box<dyn ActionHandler>> = if let Some(h) = handlers.get(&action.action_type) {
+            Some(h)
+        } else {
+            // Support simple wildcard handlers registered as `prefix.*`, e.g. `grid.*`
+            handlers.values().find(|h| {
+                let pattern = h.action_type();
+                if pattern.ends_with(".*") {
+                    let prefix = &pattern[..pattern.len() - 2];
+                    action.action_type.starts_with(prefix)
+                } else {
+                    false
+                }
+            })
+        };
+
+        let handler = handler_opt.ok_or_else(|| ActionError::HandlerNotFound {
+            action_type: action.action_type.clone(),
+        })?;
+
         // Use the provided app_state parameter (safer than the previous null-deref)
         let result = handler.execute(&action, &context, app_state).await;
         

@@ -143,6 +143,7 @@ pub enum SyncOperation {
 
 /// Main sync manager (simplified for community)
 pub struct SyncManager {
+    #[allow(dead_code)]
     storage: Arc<StorageManager>,
     config: SyncConfig,
     pending_changes: Arc<RwLock<VecDeque<SyncChange>>>,
@@ -356,6 +357,7 @@ impl SyncManager {
 }
 
 /// Helper struct for async sync task
+#[allow(dead_code)]
 #[derive(Clone)]
 struct SyncManagerRef {
     pending_changes: Arc<RwLock<VecDeque<SyncChange>>>,

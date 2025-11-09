@@ -1,13 +1,23 @@
 {
-  "name": "nodus-community",
-  "private": true,
-  "version": "0.1.0",
-  "type": "module",
-  "scripts": {
-    "tauri": "tauri"
-  },
-  "devDependencies": {
-    "@tauri-apps/cli": "^2",
-    "vite": "^7.2.2"
-  }
+	"name": "nodus-community",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"scripts": {
+		"tauri": "tauri",
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview --port 5173",
+		"dev:all": "concurrently \"npm run dev\" \"npx wait-on http://localhost:5173 && cross-env TAURI_DEV_PATH=http://localhost:5173 npm run tauri -- dev\""
+	},
+	"devDependencies": {
+		"@tauri-apps/cli": "^2",
+		"concurrently": "^8.2.0",
+		"cross-env": "^7.0.3",
+		"vite": "^7.2.2",
+		"wait-on": "^7.0.1"
+	},
+	"dependencies": {
+		"@tauri-apps/api": "^2.9.0"
+	}
 }

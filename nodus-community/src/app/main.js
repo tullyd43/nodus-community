@@ -1,472 +1,465 @@
-// DeveloperDashboard and UI feature components
-import { DeveloperDashboard } from "@features/dashboard/DeveloperDashboard.js";
-import { SystemBootstrap } from "@platform/bootstrap/SystemBootstrap.js";
+/**
+ * @file main.js
+ * @description Nodus Grid System bootstrap
+ * Builds the UI using imported atomic components
+ */
 
-import StateUIBridge from "@platform/state/StateUIBridge.js";
-
+import { ActionDispatcher } from "@platform/ActionDispatcher.js";
+import { AsyncOrchestrator } from "@platform/AsyncOrchestrator.js";
+import { CompleteGridSystem } from "@platform/grid/CompleteGridSystem.js";
+import {
+	Button,
+	Container,
+	GridBlock,
+	Text,
+	Modal,
+} from "@platform/ui/AtomicElements.js";
+import { CommandBar } from "@platform/ui/components/CommandBar.js";
 import { AppConfig } from "./environment.config.js";
 
-import SecurityExplainer from "@/features/security/SecurityExplainer.js";
-import { ActionDispatcher } from "@platform/actions/ActionDispatcher.js";
-import BindEngine from "@/features/ui/BindEngine.js";
+// Global instances
+let actionDispatcher;
+let asyncOrchestrator;
+let mainGridSystem;
+let commandBar;
 
 /**
- * @function bootstrap
- * @description Asynchronously initializes the Nodus application using V8.0 patterns.
- * Everything flows through ActionDispatcher and AsyncOrchestrator.
+ * Bootstrap Nodus using imported atomic components
  */
-const _orchestratedBootstrapLogic = async (
-	stateManager,
-	actionDispatcher,
-	orchestrator,
-	policies,
-	bootstrapDuration
-) => {
-	// 2. Bootstrap metrics through ActionDispatcher
-	await actionDispatcher.dispatch("observability.metrics", {
-		type: "bootstrap",
-		duration: bootstrapDuration,
-		component: "main",
-	});
+async function bootstrap() {
+	try {
+		console.log("🚀 Initializing Nodus Grid System...");
+		const startTime = performance.now();
 
-	// 3. Capability mapping through AsyncOrchestrator
-	/* PERFORMANCE_BUDGET: 10ms */
-	const runner = orchestrator.createRunner("capability_mapping");
-	const capabilities = await runner.run(async () => {
-		return {
-			hasSigner: !!stateManager?.signer,
-			hasIndexedDB: !!stateManager?.storage?.ready,
-			policies: {
-				ui: {
-					enable_security_hud: !!policies?.getPolicy(
-						"ui",
-						"enable_security_hud"
-					),
-					enable_virtual_list:
-						policies?.getPolicy("ui", "enable_virtual_list") ??
-						true,
-				},
-				grid: {
-					enable_analytics:
-						policies?.getPolicy("grid", "enable_analytics") ?? true,
-				},
-				security: {
-					allow_client_policy_updates: !!policies?.getPolicy(
-						"security",
-						"allow_client_policy_updates"
-					),
-					policy_admin_permission:
-						policies?.getPolicy(
-							"security",
-							"policy_admin_permission"
-						) || "policy.admin",
-				},
-			},
-		};
-	});
+		// 1. Initialize core systems
+		await initializeCoreSystems();
 
-	Object.freeze(capabilities.policies.ui);
-	Object.freeze(capabilities.policies.grid);
-	Object.freeze(capabilities.policies.security);
-	Object.freeze(capabilities.policies);
-	window.__nodusCapabilities = capabilities;
+		// 2. Initialize grid
+		await initializeGrid();
 
-	// 4. Grid initialization through AsyncOrchestrator
-	const gridSystem = stateManager.managers.completeGridSystem;
-	if (
-		gridSystem &&
-		(!gridSystem.isInitialized || !gridSystem.isInitialized())
-	) {
-		/* PERFORMANCE_BUDGET: 50ms */
-		const gridRunner = orchestrator.createRunner("grid_initialization");
-		const gridInitDuration = await gridRunner.run(async () => {
-			const g0 = performance.now();
-			await gridSystem.initialize();
-			return performance.now() - g0;
-		});
+		// 3. Create command bar using imported component
+		await createCommandBar();
 
-		console.warn(`⏱️ Grid initialized in ${gridInitDuration.toFixed(1)}ms`);
+		// 4. Setup global handlers
+		setupGlobalHandlers();
 
-		// Grid metrics through ActionDispatcher
-		if (capabilities.policies.grid.enable_analytics) {
-			await actionDispatcher.dispatch("observability.metrics", {
-				type: "grid_init",
-				duration: gridInitDuration,
-				component: "grid",
-			});
-		}
+		// 5. Finalize
+		const duration = performance.now() - startTime;
+		await finalizeBootstrap(duration);
+
+		console.log(`✅ Nodus initialized in ${duration.toFixed(2)}ms`);
+	} catch (error) {
+		console.error("❌ Bootstrap failed:", error);
+		showError(error);
+		throw error;
 	}
-
-	// 5. Default grid configuration through ActionDispatcher
-	const cols = Number(policies?.getPolicy("grid", "default_columns") ?? 24);
-	const w = 6,
-		h = 4,
-		x = Math.max(0, Math.floor((cols - w) / 2)),
-		y = 2;
-	const defaultConfig = {
-		blocks: [
-			{
-				id: "starter",
-				type: "button",
-				x,
-				y,
-				w,
-				h,
-				constraints: { minW: 2, minH: 2, maxW: cols, maxH: 1000 },
-				props: {
-					label: "Add Block",
-					mode: "modal",
-					variant: "primary",
-				},
-			},
-		],
-	};
-
-	await actionDispatcher.dispatch("grid.setConfig", {
-		config: defaultConfig,
-		configId: "dev-default",
-		actor: "system",
-	});
-
-	// 6. UI binding initialization
-	const bindEngine = new BindEngine({ stateManager });
-	await bindEngine.start(document);
-	stateManager.managers.bindEngine = bindEngine;
-
-	const uiBridge = new StateUIBridge(stateManager);
-	uiBridge.attachBindEngine(bindEngine);
-	stateManager.managers.stateUIBridge = uiBridge;
-
-	const dispatcher = new ActionDispatcher({
-		hybridStateManager: stateManager,
-	});
-	dispatcher.attach(document);
-	stateManager.managers.actionDispatcher = dispatcher;
-
-	// 7. Event bridge configuration through policies
-	const bridgeEnabled =
-		policies?.getPolicy("ui", "enable_bind_bridge") ??
-		!!import.meta.env?.DEV;
-	const updateInputs =
-		policies?.getPolicy("ui", "bind_bridge_update_inputs") ??
-		!!import.meta.env?.DEV;
-
-	if (bridgeEnabled && stateManager.on) {
-		uiBridge.enableDomBridge({ root: document, updateInputs });
-	} else {
-		uiBridge.disableDomBridge();
-	}
-
-	// 8. Security HUD through AsyncOrchestrator
-	let hud = null;
-	const enableHud = capabilities.policies.ui.enable_security_hud;
-	if (enableHud) {
-		/* PERFORMANCE_BUDGET: 15ms */
-		const hudRunner = orchestrator.createRunner("security_hud_init");
-		hud = await hudRunner.run(async () => {
-			const hudElement = new SecurityExplainer(stateManager);
-			hudElement.mount();
-			return hudElement;
-		});
-	}
-
-	// 9. Virtual list through AsyncOrchestrator
-	let vlist = null;
-	const enableVL = capabilities.policies.ui.enable_virtual_list;
-	const container = document.querySelector("#vlist-container");
-
-	if (container && enableVL) {
-		/* PERFORMANCE_BUDGET: 20ms */
-		const vlistRunner = orchestrator.createRunner("virtual_list_creation");
-
-		const createVirtualList = () => {
-			return import("@shared/components/VirtualList.js").then(
-				({ default: VirtualList }) => {
-					const vlistData = [];
-					for (let i = 0; i < 10000; i++) {
-						vlistData.push({
-							id: `item-${i}`,
-							title: `Virtual Item ${i}`,
-							entity_type:
-								i % 3 === 0
-									? "document"
-									: i % 3 === 1
-										? "user"
-										: "task",
-						});
-					}
-
-					vlist = new VirtualList({
-						container,
-						itemHeight: 50,
-						totalItems: vlistData.length,
-						renderItem: (el, i) => {
-							const row = vlistData[i];
-							if (!row) return;
-							el.className = "vlist-item";
-							const titleDiv = document.createElement("div");
-							titleDiv.className = "title";
-							titleDiv.textContent = row?.title ?? row?.id ?? i;
-							const metaDiv = document.createElement("div");
-							metaDiv.className = "meta";
-							metaDiv.textContent = row?.entity_type ?? "";
-							el.appendChild(titleDiv);
-							el.appendChild(metaDiv);
-						},
-					});
-
-					vlist.mount();
-					vlist.refresh();
-					window.__vlistData = vlistData;
-					return vlist;
-				}
-			);
-		};
-
-		if ("IntersectionObserver" in window) {
-			const io = new IntersectionObserver(
-				(entries) => {
-					for (const entry of entries) {
-						if (entry.isIntersecting) {
-							io.unobserve(container);
-							io.disconnect();
-
-							// Now we can handle the promise properly
-							vlistRunner
-								.run(createVirtualList)
-								.catch(console.error);
-							break;
-						}
-					}
-				},
-				{ root: null, threshold: 0.1 }
-			);
-			io.observe(container);
-		} else {
-			vlist = await vlistRunner.run(createVirtualList);
-		}
-	}
-
-	console.warn("✅ Complete Grid System Initialized. Application is ready.");
-	console.warn("%cNODUS READY", "color:#80ffaa;font-weight:bold");
-
-	// 10. Developer dashboard through AsyncOrchestrator
-	let dashboard = null;
-	const isLocalDev =
-		import.meta.env?.DEV || window.location.hostname === "localhost";
-	const securityManager = stateManager.managers.securityManager;
-	const subject = securityManager?.getSubject() || {};
-
-	const policyEnabled = policies?.getPolicy(
-		"system",
-		"enable_developer_dashboard"
-	);
-	const featureEnabled =
-		typeof policyEnabled === "boolean" ? policyEnabled : isLocalDev;
-
-	const requiredPerm =
-		policies?.getPolicy("system", "developer_dashboard_permission") ||
-		"dev.dashboard.view";
-	const hasPermission = Array.isArray(subject?.permissions)
-		? subject.permissions.includes(requiredPerm)
-		: subject?.role === "admin";
-
-	if (featureEnabled && hasPermission) {
-		/* PERFORMANCE_BUDGET: 30ms */
-		const dashRunner = orchestrator.createRunner(
-			"dashboard_initialization"
-		);
-		const dashDuration = await dashRunner.run(async () => {
-			const d0 = performance.now();
-			dashboard = new DeveloperDashboard(document.body, { stateManager });
-			return performance.now() - d0;
-		});
-
-		await actionDispatcher.dispatch("observability.metrics", {
-			type: "bootstrap.stage",
-			stage: "dashboard",
-			duration: dashDuration,
-			component: "dashboard",
-		});
-	}
-
-	// 11. Global namespace exposure
-	const isDev =
-		import.meta.env?.DEV || window.location.hostname === "localhost";
-	const exposeGlobal = policies?.getPolicy(
-		"security",
-		"expose_global_namespace"
-	);
-	const shouldExpose =
-		typeof exposeGlobal === "boolean" ? exposeGlobal : isDev;
-
-	if (shouldExpose) {
-		const exposed = {
-			state: stateManager,
-			hud,
-			vlist,
-			dashboard,
-			uiBridge,
-			capabilities,
-		};
-		Object.freeze(exposed);
-		Object.defineProperty(window, "Nodus", {
-			value: exposed,
-			configurable: false,
-			enumerable: false,
-			writable: false,
-		});
-	}
-
-	// 12. HMR cleanup
-	if (import.meta.hot) {
-		import.meta.hot.dispose(() => {
-			vlist?.unmount?.();
-			hud?.dispose?.();
-			uiBridge?.dispose?.();
-			window.nodusApp?.dispose?.();
-			uiBridge.disableDomBridge();
-			stateManager?.managers?.forensicLogger?.cleanup?.();
-			delete window.Nodus;
-		});
-	}
-};
-
-const bootstrap = async () => {
-	if (window.__bootstrappingNodus) return;
-	window.__bootstrappingNodus = true;
-
-	if (window.nodusApp) {
-		console.warn(
-			"[Nodus] Application already initialized. Skipping bootstrap."
-		);
-		return;
-	}
-
-	console.warn("🚀 Nodus Grid Data Layer Test Starting...");
-
-	// Configure CDS transport
-	AppConfig.cdsTransport = function delegatedTransport(url, init) {
-		const native = globalThis.__NODUS_NATIVE_FETCH__;
-		if (typeof native === "function") return native(url, init);
-		return Promise.reject(new Error("No native CDS transport available"));
-	};
-
-	// 1. SystemBootstrap initialization
-	const bootstrapApp = new SystemBootstrap({ ...AppConfig });
-	const t0 = performance.now();
-	const stateManager = await bootstrapApp.initialize({
-		userId: "demo-user",
-		clearanceLevel: "internal",
-	});
-	const bootstrapDuration = performance.now() - t0;
-
-	window.nodusApp = stateManager;
-	window.appViewModel = { hybridStateManager: stateManager };
-
-	// Get core managers
-	const actionDispatcher = stateManager.managers.actionDispatcher;
-	const orchestrator = stateManager.managers.asyncOrchestrator;
-	const policies = stateManager.managers.policies;
-
-	// Now, orchestrate the rest of the bootstrap logic
-	await orchestrator.run(
-		// Pass a synchronous function that returns a Promise (no async/await inside)
-		() => {
-			return _orchestratedBootstrapLogic(
-				stateManager,
-				actionDispatcher,
-				orchestrator,
-				policies,
-				bootstrapDuration
-			);
-		},
-		{
-			label: "application.bootstrap",
-			classification: "SECRET",
-			timeout: 120000, // Increased timeout for full bootstrap
-		}
-	);
-};
-
-// Global error forwarding through ActionDispatcher
-const policies = window.nodusApp?.managers?.policies;
-const reportErrors =
-	policies?.getPolicy("security", "report_unhandled_errors") ??
-	!!import.meta.env?.DEV;
-
-if (reportErrors) {
-	const forward = (errObj) => {
-		// Synchronous function that handles the orchestrated error reporting
-		const orchestrator = window.nodusApp?.managers?.asyncOrchestrator;
-		if (orchestrator) {
-			orchestrator
-				.run(
-					() => {
-						// Return a Promise chain (no async/await inside) so the orchestrator
-						// can instrument and observe the operation as required.
-						return Promise.resolve().then(() => {
-							const actionDispatcher =
-								window.nodusApp?.managers?.actionDispatcher;
-							if (actionDispatcher) {
-								// actionDispatcher.dispatch returns a Promise — return it directly
-								return actionDispatcher.dispatch(
-									"observability.error",
-									{
-										type: "unhandled_error",
-										message:
-											errObj?.reason?.message ||
-											errObj?.message ||
-											String(errObj?.reason || errObj),
-										error:
-											errObj?.error ||
-											errObj?.reason ||
-											errObj,
-										component: "global_error_handler",
-									}
-								);
-							}
-							return Promise.resolve();
-						});
-					},
-					{
-						label: "global_error_forwarding",
-						classification: "CONFIDENTIAL",
-						timeout: 5000,
-					}
-				)
-				.catch((error) => {
-					console.error(
-						"[GlobalErrorHandler] Failed to dispatch error:",
-						error
-					);
-				});
-		} else {
-			// Fallback if orchestrator is not available (e.g., during very early bootstrap)
-			console.error(
-				"[GlobalErrorHandler] Orchestrator not available. Unhandled error:",
-				errObj
-			);
-		}
-	};
-	window.addEventListener("error", forward);
-	window.addEventListener("unhandledrejection", forward);
 }
 
-bootstrap().finally(async () => {
-	const orchestrator = window.nodusApp?.managers?.asyncOrchestrator;
-	if (orchestrator) {
-		await orchestrator.run(
-			() => {
-				window.__bootstrappingNodus = false;
-			},
-			{
-				label: "bootstrap_cleanup",
-				classification: "PUBLIC",
-				timeout: 1000,
-			}
-		);
-	} else {
-		window.__bootstrappingNodus = false;
+/**
+ * Initialize core backend systems
+ */
+async function initializeCoreSystems() {
+	actionDispatcher = new ActionDispatcher();
+	asyncOrchestrator = new AsyncOrchestrator();
+
+	// Test backend connection
+	try {
+		await actionDispatcher.dispatch("system.ping", {});
+		console.log("✅ Rust backend connected");
+	} catch (error) {
+		console.warn("⚠️ Offline mode:", error);
 	}
-});
+
+	// Global access
+	window.__nodus = {
+		actionDispatcher,
+		asyncOrchestrator,
+		version: "8.0.0-community",
+		components: { Button, Container, GridBlock, CommandBar, Text, Modal },
+	};
+}
+
+/**
+ * Initialize grid system
+ */
+async function initializeGrid() {
+	const gridContainer = document.querySelector("#nodus-grid");
+	if (!gridContainer) {
+		throw new Error("Grid container #nodus-grid not found");
+	}
+
+	mainGridSystem = new CompleteGridSystem(gridContainer, {
+		enableHistory: true,
+		enableToasts: true,
+		enableAnalytics: !AppConfig.demoMode,
+		enableDragDrop: true,
+		classification: "PUBLIC",
+		blockRenderer: (blockData) => {
+			return new GridBlock({
+				blockId: blockData.id,
+				type: blockData.type || "content",
+				blockProps: blockData.props || {},
+			});
+		},
+	});
+
+	await mainGridSystem.initialize();
+	window.__nodus.gridSystem = mainGridSystem;
+
+	// Add demo blocks
+	await addDemoBlocks();
+}
+
+/**
+ * Create command bar using imported CommandBar component
+ */
+async function createCommandBar() {
+	const commands = [
+		{
+			id: "add-block",
+			icon: "⊞",
+			label: "Add Block",
+			tooltip: "Add new block (⌘N)",
+			shortcut: "cmd+n",
+			variant: "primary",
+			action: async () => await addNewBlock(),
+		},
+		{ type: "separator" },
+		{
+			id: "undo",
+			icon: "↶",
+			tooltip: "Undo (⌘Z)",
+			shortcut: "cmd+z",
+			action: async () =>
+				await actionDispatcher.dispatch("grid.undo", {}),
+		},
+		{
+			id: "redo",
+			icon: "↷",
+			tooltip: "Redo (⌘Y)",
+			shortcut: "cmd+y",
+			action: async () =>
+				await actionDispatcher.dispatch("grid.redo", {}),
+		},
+		{ type: "separator" },
+		{
+			id: "layout-reset",
+			icon: "⊡",
+			tooltip: "Reset Layout",
+			action: async () =>
+				await actionDispatcher.dispatch("grid.layout.reset", {}),
+		},
+		{
+			id: "export",
+			icon: "↗",
+			tooltip: "Export Grid",
+			action: async () => await exportGrid(),
+		},
+		{ type: "separator" },
+		{
+			id: "settings",
+			icon: "⚙",
+			tooltip: "Settings",
+			action: async () => await showSettings(),
+		},
+	];
+
+	commandBar = new CommandBar({
+		position: "top-left",
+		commands: commands,
+	});
+
+	commandBar.mount(document.body);
+}
+
+/**
+ * Add demo blocks using imported GridBlock component
+ */
+async function addDemoBlocks() {
+	const demoBlocks = [
+		{
+			id: crypto.randomUUID(),
+			type: "welcome",
+			props: {
+				title: "Welcome to Nodus",
+				content: `
+					<p>This is your grid system built with atomic components.</p>
+					<p>Use the command bar above to add new blocks and interact with your grid.</p>
+				`,
+			},
+			x: 0,
+			y: 0,
+			w: 2,
+			h: 1,
+		},
+		{
+			id: crypto.randomUUID(),
+			type: "info",
+			props: {
+				title: "Atomic Design",
+				content: `
+					<p>Every element you see is built using the same atomic component system.</p>
+					<p>This ensures consistency and reusability across the platform.</p>
+				`,
+			},
+			x: 2,
+			y: 0,
+			w: 2,
+			h: 1,
+		},
+	];
+
+	for (const block of demoBlocks) {
+		await mainGridSystem.addBlock(block);
+	}
+}
+
+/**
+ * Add new block using imported components
+ */
+async function addNewBlock() {
+	try {
+		const blockData = {
+			id: crypto.randomUUID(),
+			type: "content",
+			props: {
+				title: "New Block",
+				content: "<p>Click to edit this block content.</p>",
+			},
+			x: 0,
+			y: 0,
+			w: 1,
+			h: 1,
+		};
+
+		const blockId = await mainGridSystem.addBlock(blockData);
+		console.log(`Added block: ${blockId}`);
+
+		// Animate the command bar button
+		const addButton = commandBar.element.querySelector(
+			'[data-command="add-block"]'
+		);
+		if (addButton) {
+			addButton.style.transform = "scale(0.9)";
+			setTimeout(() => {
+				addButton.style.transform = "scale(1)";
+			}, 150);
+		}
+	} catch (error) {
+		console.error("Failed to add block:", error);
+	}
+}
+
+/**
+ * Export grid configuration
+ */
+async function exportGrid() {
+	try {
+		const config = await actionDispatcher.dispatch("grid.export", {});
+
+		const blob = new Blob([JSON.stringify(config, null, 2)], {
+			type: "application/json",
+		});
+		const url = URL.createObjectURL(blob);
+
+		const link = document.createElement("a");
+		link.href = url;
+		link.download = `nodus-grid-${Date.now()}.json`;
+		link.click();
+
+		URL.revokeObjectURL(url);
+		console.log("Grid exported successfully");
+	} catch (error) {
+		console.error("Export failed:", error);
+	}
+}
+
+/**
+ * Show settings using imported Modal and other components
+ */
+async function showSettings() {
+	const modal = new Modal();
+
+	const title = new Text({
+		textContent: "Settings",
+		variant: "heading",
+	});
+
+	const closeButton = new Button({
+		textContent: "Close",
+		variant: "primary",
+	});
+
+	closeButton.addEventListener("click", () => modal.destroy());
+
+	modal.dialog.appendChild(title);
+	modal.dialog.appendChild(closeButton);
+	modal.mount(document.body);
+}
+
+/**
+ * Setup global event handlers
+ */
+function setupGlobalHandlers() {
+	window.addEventListener("error", async (e) => {
+		console.error("Global error:", e.error);
+		await reportError(e.error);
+	});
+
+	window.addEventListener("unhandledrejection", async (e) => {
+		console.error("Unhandled rejection:", e.reason);
+		await reportError(e.reason);
+	});
+
+	setupResponsiveHandling();
+}
+
+/**
+ * Setup responsive behavior
+ */
+function setupResponsiveHandling() {
+	const mediaQuery = window.matchMedia("(max-width: 768px)");
+
+	const handleResponsive = (e) => {
+		document.body.setAttribute("data-mobile", e.matches);
+
+		if (commandBar && e.matches) {
+			// Move command bar to bottom on mobile
+			Object.assign(commandBar.element.style, {
+				position: "fixed",
+				bottom: "20px",
+				top: "auto",
+				left: "50%",
+				transform: "translateX(-50%)",
+			});
+		} else if (commandBar) {
+			// Reset to top-left on desktop
+			Object.assign(commandBar.element.style, {
+				position: "fixed",
+				top: "20px",
+				bottom: "auto",
+				left: "20px",
+				transform: "none",
+			});
+		}
+	};
+
+	mediaQuery.addListener(handleResponsive);
+	handleResponsive(mediaQuery);
+}
+
+/**
+ * Report error to backend
+ */
+async function reportError(error) {
+	try {
+		await actionDispatcher.dispatch("system.error.report", {
+			message: error?.message || String(error),
+			stack: error?.stack,
+			timestamp: new Date().toISOString(),
+		});
+	} catch (reportError) {
+		console.error("Failed to report error:", reportError);
+	}
+}
+
+/**
+ * Show error using imported components
+ */
+function showError(error) {
+	const errorContainer = new Container({
+		style: {
+			position: "fixed",
+			top: "50%",
+			left: "50%",
+			transform: "translate(-50%, -50%)",
+			background: "rgba(255, 59, 48, 0.95)",
+			backdropFilter: "var(--blur-md)",
+			color: "white",
+			padding: "var(--space-lg)",
+			borderRadius: "var(--radius-lg)",
+			maxWidth: "400px",
+			zIndex: "10000",
+			textAlign: "center",
+		},
+	});
+
+	const title = new Text({
+		textContent: "Initialization Failed",
+		variant: "heading",
+		style: { color: "white", marginBottom: "var(--space-sm)" },
+	});
+
+	const message = new Text({
+		textContent: error.message,
+		variant: "body",
+		style: {
+			color: "white",
+			opacity: "0.9",
+			marginBottom: "var(--space-md)",
+		},
+	});
+
+	const closeButton = new Button({
+		textContent: "Close",
+		variant: "secondary",
+		style: { background: "rgba(255, 255, 255, 0.2)" },
+	});
+
+	closeButton.addEventListener("click", () => errorContainer.destroy());
+
+	errorContainer.appendChild(title);
+	errorContainer.appendChild(message);
+	errorContainer.appendChild(closeButton);
+	errorContainer.mount(document.body);
+}
+
+/**
+ * Finalize bootstrap process
+ */
+async function finalizeBootstrap(duration) {
+	try {
+		await actionDispatcher.dispatch("system.bootstrap.completed", {
+			duration,
+			timestamp: new Date().toISOString(),
+			version: "8.0.0-community",
+			features: {
+				atomicComponents: true,
+				gridSystem: true,
+				commandBar: true,
+			},
+		});
+	} catch (error) {
+		console.warn("Failed to report bootstrap:", error);
+	}
+
+	document.body.classList.add("nodus-ready");
+	document.body.setAttribute("data-nodus-status", "ready");
+
+	document.dispatchEvent(
+		new CustomEvent("nodus:ready", {
+			detail: {
+				duration,
+				gridSystem: mainGridSystem,
+				commandBar: commandBar,
+				components: window.__nodus.components,
+			},
+		})
+	);
+}
+
+// Auto-bootstrap when DOM is ready
+if (document.readyState === "loading") {
+	document.addEventListener("DOMContentLoaded", bootstrap);
+} else {
+	setTimeout(bootstrap, 0);
+}
+
+// Export for external use
+export {
+	actionDispatcher,
+	asyncOrchestrator,
+	mainGridSystem,
+	commandBar,
+	bootstrap,
+};

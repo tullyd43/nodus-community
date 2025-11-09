@@ -16,33 +16,28 @@ pub type AppStateType = Arc<RwLock<AppState>>;
 /// callers (including wrappers) can pass in the shared state.
 pub async fn get_system_status(state: AppStateType) -> Result<Value, String> {
     let app_state = state.read().await;
-    let status = app_state.get_system_status().await;
-
+    // Use the existing get_app_stats() method on AppState for system stats
+    let status = app_state.get_app_stats().await;
     serde_json::to_value(status).map_err(|e| e.to_string())
 }
 
 /// List loaded plugins
 pub async fn list_plugins(state: AppStateType) -> Result<Vec<String>, String> {
     let app_state = state.read().await;
-    Ok(app_state.list_plugins().await)
+    // Return plugin IDs from the AppState plugin info
+    let plugins = app_state.get_plugin_info().await;
+    Ok(plugins.into_iter().map(|p| p.id).collect())
 }
 
 /// Load a plugin (behavior depends on license tier)
 pub async fn load_plugin(state: AppStateType, plugin_path: String) -> Result<String, String> {
-    let app_state = state.read().await;
-
-    match app_state.load_plugin(&plugin_path).await {
-        Ok(plugin_id) => Ok(plugin_id),
-        Err(e) => Err(e.to_string()),
-    }
+    // Delegate plugin loading to the plugin-specific module so plugin logic
+    // remains colocated in `commands_plugin.rs`.
+    crate::commands_plugin::load_plugin_from_path(state, plugin_path).await
 }
 
 /// Unload a plugin
 pub async fn unload_plugin(state: AppStateType, plugin_id: String) -> Result<(), String> {
-    let app_state = state.read().await;
-
-    match app_state.unload_plugin(&plugin_id).await {
-        Ok(()) => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
+    // Delegate plugin unloading to the plugin-specific module implementation.
+    crate::commands_plugin::unload_plugin_by_id(state, plugin_id).await
 }

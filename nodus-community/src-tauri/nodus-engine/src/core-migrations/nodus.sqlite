@@ -1,0 +1,370 @@
+-- ======================================================================
+-- NODUS COMMUNITY v1.0 - SQLite Schema  
+-- Faithful conversion of PostgreSQL schema with enterprise features removed
+-- Core Architecture: type_definitions drives objects & events (separate tables)
+-- ======================================================================
+
+PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
+
+BEGIN TRANSACTION;
+
+-- ----------------------------------------------------------------------
+-- USERS & BASIC AUTH (simplified from app_users)
+-- ----------------------------------------------------------------------
+CREATE TABLE users (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  email             TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  display_name      TEXT,
+  status            TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+  
+  -- Basic settings
+  preferences       TEXT DEFAULT '{}',  -- JSON
+  
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Sessions (simplified from secure_sessions)
+CREATE TABLE user_sessions (
+  session_id        TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  user_id           TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  ip_address        TEXT,
+  user_agent        TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  last_activity     TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at        TEXT NOT NULL
+);
+
+-- API keys (for developers)
+CREATE TABLE api_keys (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  name              TEXT NOT NULL,
+  key_hash          TEXT NOT NULL UNIQUE,  -- Store hash only
+  scopes            TEXT DEFAULT '[]',      -- JSON array
+  created_by        TEXT NOT NULL REFERENCES users(id),
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at        TEXT,
+  last_used_at      TEXT,
+  is_active         BOOLEAN DEFAULT true
+);
+
+-- ----------------------------------------------------------------------
+-- TYPE DEFINITIONS (Core Ontology - drives objects & events)  
+-- ----------------------------------------------------------------------
+CREATE TABLE type_definitions (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  type_name         TEXT NOT NULL UNIQUE,
+  domain            TEXT NOT NULL CHECK (domain IN ('data', 'event')),
+  field_schema      TEXT NOT NULL DEFAULT '{}',    -- JSON schema
+  ui_schema         TEXT NOT NULL DEFAULT '{}',     -- UI hints
+  version           TEXT DEFAULT '1.0',
+  is_system         BOOLEAN DEFAULT false,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ----------------------------------------------------------------------
+-- OBJECTS (State/Things - domain='data')
+-- ----------------------------------------------------------------------
+CREATE TABLE objects (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  type_name         TEXT NOT NULL REFERENCES type_definitions(type_name),
+  domain            TEXT NOT NULL DEFAULT 'data',
+  data              TEXT NOT NULL DEFAULT '{}',     -- JSON: all object data
+  
+  -- Metadata
+  created_by        TEXT REFERENCES users(id),
+  updated_by        TEXT REFERENCES users(id),
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  
+  -- Basic versioning/CRDT support for community
+  vector_clock      TEXT NOT NULL DEFAULT '{}',    -- JSON
+  version           INTEGER DEFAULT 1
+);
+
+-- ----------------------------------------------------------------------
+-- EVENTS (Things that happened - domain='event')
+-- ----------------------------------------------------------------------
+CREATE TABLE events (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  type_name         TEXT NOT NULL REFERENCES type_definitions(type_name),
+  domain            TEXT NOT NULL DEFAULT 'event',
+  data              TEXT NOT NULL DEFAULT '{}',     -- JSON: all event data
+  
+  -- Event context (what it relates to)
+  entity_table      TEXT,                           -- 'objects' or 'events'
+  entity_id         TEXT,
+  
+  -- Metadata
+  created_by        TEXT REFERENCES users(id),
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  
+  -- Basic CRDT support
+  vector_clock      TEXT NOT NULL DEFAULT '{}',    -- JSON
+  crdt_operation_id TEXT
+);
+
+-- ----------------------------------------------------------------------
+-- LINKS (Relationships between objects/events)
+-- ----------------------------------------------------------------------
+CREATE TABLE links (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  from_table        TEXT NOT NULL CHECK (from_table IN ('objects', 'events')),
+  from_id           TEXT NOT NULL,
+  to_table          TEXT NOT NULL CHECK (to_table IN ('objects', 'events')),
+  to_id             TEXT NOT NULL,
+  relation          TEXT NOT NULL,
+  domain            TEXT NOT NULL DEFAULT 'data',
+  metadata          TEXT NOT NULL DEFAULT '{}',     -- JSON
+  
+  -- Basic semantic support
+  confidence_score  REAL DEFAULT 1.0,
+  is_inferred       BOOLEAN DEFAULT false,
+  
+  -- Basic CRDT support  
+  vector_clock      TEXT NOT NULL DEFAULT '{}',    -- JSON
+  conflict_resolution TEXT DEFAULT 'lww',
+  
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  created_by        TEXT REFERENCES users(id)
+);
+
+-- ----------------------------------------------------------------------
+-- CONFIGURATIONS (App/System Settings)
+-- ----------------------------------------------------------------------
+CREATE TABLE configurations (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  domain            TEXT NOT NULL,
+  scope             TEXT NOT NULL,  
+  key               TEXT NOT NULL,
+  kind              TEXT NOT NULL CHECK (kind IN ('text', 'number', 'boolean', 'json')),
+  value             TEXT,           -- JSON or scalar value
+  description       TEXT,
+  is_secret         BOOLEAN DEFAULT false,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  
+  UNIQUE(domain, scope, key)
+);
+
+-- ----------------------------------------------------------------------
+-- APP LOGS (Basic Logging for Community)
+-- ----------------------------------------------------------------------
+CREATE TABLE app_logs (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  level             TEXT NOT NULL CHECK (level IN ('debug', 'info', 'warn', 'error')),
+  message           TEXT NOT NULL,
+  context           TEXT DEFAULT '{}',     -- JSON
+  user_id           TEXT REFERENCES users(id),
+  session_id        TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ----------------------------------------------------------------------
+-- AUDIT TRAIL (Basic Change Tracking)
+-- ----------------------------------------------------------------------
+CREATE TABLE audit_trail (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  table_name        TEXT NOT NULL,
+  record_id         TEXT NOT NULL,
+  action            TEXT NOT NULL CHECK (action IN ('INSERT', 'UPDATE', 'DELETE')),
+  old_values        TEXT,             -- JSON
+  new_values        TEXT,             -- JSON  
+  user_id           TEXT REFERENCES users(id),
+  session_id        TEXT,
+  ip_address        TEXT,
+  user_agent        TEXT,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ----------------------------------------------------------------------
+-- PERFORMANCE TRACES (Basic Performance Monitoring)
+-- ----------------------------------------------------------------------
+CREATE TABLE performance_traces (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  operation_name    TEXT NOT NULL,
+  duration_ms       REAL NOT NULL,
+  user_id           TEXT REFERENCES users(id),
+  session_id        TEXT,
+  metadata          TEXT DEFAULT '{}',     -- JSON
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ----------------------------------------------------------------------
+-- INDEXES (Performance)
+-- ----------------------------------------------------------------------
+
+-- Users
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_status ON users(status);
+
+-- Sessions  
+CREATE INDEX idx_sessions_user ON user_sessions(user_id);
+CREATE INDEX idx_sessions_expires ON user_sessions(expires_at);
+
+-- API Keys
+CREATE INDEX idx_api_keys_user ON api_keys(created_by);
+CREATE INDEX idx_api_keys_active ON api_keys(is_active);
+
+-- Type definitions
+CREATE INDEX idx_types_domain ON type_definitions(domain);
+CREATE INDEX idx_types_system ON type_definitions(is_system);
+
+-- Objects
+CREATE INDEX idx_objects_type ON objects(type_name);
+CREATE INDEX idx_objects_created_by ON objects(created_by);
+CREATE INDEX idx_objects_created_at ON objects(created_at);
+CREATE INDEX idx_objects_updated_at ON objects(updated_at);
+
+-- Events
+CREATE INDEX idx_events_type ON events(type_name);
+CREATE INDEX idx_events_entity ON events(entity_table, entity_id);
+CREATE INDEX idx_events_created_by ON events(created_by);
+CREATE INDEX idx_events_created_at ON events(created_at);
+
+-- Links
+CREATE INDEX idx_links_from ON links(from_table, from_id);
+CREATE INDEX idx_links_to ON links(to_table, to_id);
+CREATE INDEX idx_links_relation ON links(relation);
+
+-- Configurations
+CREATE INDEX idx_configs_domain_scope ON configurations(domain, scope);
+CREATE INDEX idx_configs_secret ON configurations(is_secret);
+
+-- Logs & Audit
+CREATE INDEX idx_logs_level ON app_logs(level);
+CREATE INDEX idx_logs_user ON app_logs(user_id);
+CREATE INDEX idx_logs_created_at ON app_logs(created_at);
+CREATE INDEX idx_audit_table_record ON audit_trail(table_name, record_id);
+CREATE INDEX idx_audit_user ON audit_trail(user_id);
+CREATE INDEX idx_audit_created_at ON audit_trail(created_at);
+
+-- Performance
+CREATE INDEX idx_perf_operation ON performance_traces(operation_name);
+CREATE INDEX idx_perf_user ON performance_traces(user_id);
+CREATE INDEX idx_perf_created_at ON performance_traces(created_at);
+
+-- ----------------------------------------------------------------------
+-- TRIGGERS (Automated Updates)
+-- ----------------------------------------------------------------------
+
+CREATE TRIGGER trigger_users_updated_at
+  AFTER UPDATE ON users
+  BEGIN
+    UPDATE users SET updated_at = datetime('now') WHERE id = NEW.id;
+  END;
+
+CREATE TRIGGER trigger_type_definitions_updated_at
+  AFTER UPDATE ON type_definitions
+  BEGIN
+    UPDATE type_definitions SET updated_at = datetime('now') WHERE id = NEW.id;
+  END;
+
+CREATE TRIGGER trigger_objects_updated_at
+  AFTER UPDATE ON objects
+  BEGIN
+    UPDATE objects SET updated_at = datetime('now') WHERE id = NEW.id;
+  END;
+
+CREATE TRIGGER trigger_configurations_updated_at
+  AFTER UPDATE ON configurations
+  BEGIN
+    UPDATE configurations SET updated_at = datetime('now') WHERE id = NEW.id;
+  END;
+
+-- Basic audit triggers
+CREATE TRIGGER trigger_objects_audit_insert
+  AFTER INSERT ON objects
+  BEGIN
+    INSERT INTO audit_trail (table_name, record_id, action, new_values, user_id)
+    VALUES ('objects', NEW.id, 'INSERT', 
+            json_object('type_name', NEW.type_name, 'data', NEW.data), NEW.created_by);
+  END;
+
+CREATE TRIGGER trigger_objects_audit_update
+  AFTER UPDATE ON objects
+  BEGIN
+    INSERT INTO audit_trail (table_name, record_id, action, old_values, new_values, user_id)
+    VALUES ('objects', NEW.id, 'UPDATE',
+            json_object('data', OLD.data), json_object('data', NEW.data), NEW.updated_by);
+  END;
+
+CREATE TRIGGER trigger_events_audit_insert
+  AFTER INSERT ON events
+  BEGIN
+    INSERT INTO audit_trail (table_name, record_id, action, new_values, user_id)
+    VALUES ('events', NEW.id, 'INSERT',
+            json_object('type_name', NEW.type_name, 'data', NEW.data), NEW.created_by);
+  END;
+
+-- ----------------------------------------------------------------------
+-- SEED DATA (Core Community Types)
+-- ----------------------------------------------------------------------
+
+-- Core object types
+INSERT INTO type_definitions (type_name, domain, field_schema, ui_schema, is_system) VALUES
+  ('note', 'data', 
+   '{"type":"object","properties":{"title":{"type":"string"},"content":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}}}',
+   '{"icon":"StickyNote","color":"yellow"}', true),
+   
+  ('task', 'data',
+   '{"type":"object","properties":{"title":{"type":"string","required":true},"description":{"type":"string"},"completed":{"type":"boolean","default":false},"due_date":{"type":"string","format":"date"},"priority":{"type":"string","enum":["low","medium","high"]}}}',
+   '{"icon":"CheckCircle","color":"blue"}', true),
+   
+  ('person', 'data',
+   '{"type":"object","properties":{"first_name":{"type":"string","required":true},"last_name":{"type":"string","required":true},"email":{"type":"string","format":"email"},"phone":{"type":"string"},"company":{"type":"string"}}}',
+   '{"icon":"User","color":"green"}', true),
+   
+  ('document', 'data',
+   '{"type":"object","properties":{"title":{"type":"string","required":true},"file_url":{"type":"string","format":"uri"},"file_size":{"type":"number"},"mime_type":{"type":"string"}}}',
+   '{"icon":"FileText","color":"gray"}', true);
+
+-- Core event types
+INSERT INTO type_definitions (type_name, domain, field_schema, ui_schema, is_system) VALUES
+  ('comment', 'event',
+   '{"type":"object","properties":{"content":{"type":"string","required":true},"target_id":{"type":"string"}}}',
+   '{"icon":"MessageSquare","color":"blue"}', true),
+   
+  ('status_change', 'event', 
+   '{"type":"object","properties":{"old_status":{"type":"string"},"new_status":{"type":"string","required":true},"reason":{"type":"string"}}}',
+   '{"icon":"ArrowRight","color":"orange"}', true);
+
+-- Basic app configuration
+INSERT INTO configurations (domain, scope, key, kind, value, description) VALUES
+  ('app', 'global', 'name', 'text', 'Nodus Community', 'Application name'),
+  ('app', 'global', 'version', 'text', '1.0.0', 'Application version'),
+  ('grid', 'global', 'default_columns', 'number', '24', 'Default grid columns'),
+  ('ui', 'global', 'theme', 'text', 'light', 'Default UI theme');
+
+COMMIT;
+
+-- ======================================================================
+-- Community Version Notes:
+-- 
+-- This schema maintains the original Nodus architecture:
+-- - type_definitions drives both objects and events
+-- - objects and events are separate tables (core principle)
+-- - links connect any object/event to any other object/event
+-- - configurations for app settings
+-- - Basic logging and audit trail for developers
+-- 
+-- Removed enterprise features:
+-- - Multi-tenancy (organization_id columns)
+-- - Advanced security/NATO classifications  
+-- - Complex RBAC (roles/permissions tables)
+-- - MFA tables
+-- - Advanced encryption/crypto features
+-- - Complex monitoring/metrics tables
+-- - Plugin system tables
+-- - Replication/sharding tables
+-- 
+-- Kept community essentials:
+-- - Core object/event architecture
+-- - Basic user management  
+-- - API keys for developers
+-- - Basic audit trail
+-- - Performance monitoring
+-- - App configuration
+-- ======================================================================
