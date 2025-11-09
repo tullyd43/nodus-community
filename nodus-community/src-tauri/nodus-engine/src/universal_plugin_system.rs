@@ -371,8 +371,11 @@ impl UniversalPluginSystem {
     ) -> Result<serde_json::Value, PluginError> {
         tracing::debug!("Executing JS plugin: {} for action: {}", js_plugin.name, action.action_type);
         
-        // TODO: Implement actual JavaScript execution
-        // For now, return mock data
+    // Note: JavaScript execution is intentionally a mock here.
+    // A production implementation should run plugin JavaScript in a
+    // sandboxed JS runtime (QuickJS, Deno core, or WASM) and safely
+    // serialize the result. For the community build we return a
+    // stable mock payload so plugins can be exercised in tests.
         Ok(serde_json::json!({
             "plugin_id": js_plugin.id,
             "action_type": action.action_type,

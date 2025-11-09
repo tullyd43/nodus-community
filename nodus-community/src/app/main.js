@@ -6,7 +6,11 @@
 
 import { ActionDispatcher } from "@platform/ActionDispatcher.js";
 import { AsyncOrchestrator } from "@platform/AsyncOrchestrator.js";
-import { CompleteGridSystem } from "@platform/grid/CompleteGridSystem.js";
+import { createModernGrid } from "@platform/grid";
+// Expose compatibility test in the real app entry so it's available in the webview
+import testCompleteCompatibility from "@platform/grid/grid-compat-test.js";
+if (typeof window !== "undefined")
+	window.testCompleteCompatibility = testCompleteCompatibility;
 import {
 	Button,
 	Container,
@@ -88,7 +92,9 @@ async function initializeGrid() {
 		throw new Error("Grid container #nodus-grid not found");
 	}
 
-	mainGridSystem = new CompleteGridSystem(gridContainer, {
+	mainGridSystem = await createModernGrid(gridContainer, {
+		float: false, // Enable reflow/compacting
+		staticGrid: false, // Enable interactions
 		enableHistory: true,
 		enableToasts: true,
 		enableAnalytics: !AppConfig.demoMode,
@@ -103,7 +109,10 @@ async function initializeGrid() {
 		},
 	});
 
-	await mainGridSystem.initialize();
+	// Some grid implementations provide an async `initialize` method.
+	if (typeof mainGridSystem.initialize === "function") {
+		await mainGridSystem.initialize();
+	}
 	window.__nodus.gridSystem = mainGridSystem;
 
 	// Add demo blocks
@@ -210,7 +219,8 @@ async function addDemoBlocks() {
 	];
 
 	for (const block of demoBlocks) {
-		await mainGridSystem.addBlock(block);
+		// ModernGrid API: addWidget returns the widget instance
+		await mainGridSystem.addWidget(block);
 	}
 }
 
@@ -226,13 +236,14 @@ async function addNewBlock() {
 				title: "New Block",
 				content: "<p>Click to edit this block content.</p>",
 			},
-			x: 0,
-			y: 0,
+			// Let the grid auto-position new blocks (append to end). Do not set x/y
+			autoPosition: true,
 			w: 1,
 			h: 1,
 		};
 
-		const blockId = await mainGridSystem.addBlock(blockData);
+		const widget = await mainGridSystem.addWidget(blockData);
+		const blockId = widget?.id;
 		console.log(`Added block: ${blockId}`);
 
 		// Animate the command bar button

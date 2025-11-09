@@ -25,6 +25,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -35,6 +36,29 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Cache npm (~/.npm)
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json', '**/package.json') }}
+
+      - name: Install frontend dependencies
+        run: |
+          npm ci
+
+      - name: Build frontend
+        run: |
+          # Run linter if present; `--if-present` makes this a no-op when there's no script
+          npm run lint --if-present
+          npm run build
+
+      - name: Verify frontend build output
+        run: node -e "const fs=require('fs'); const p=process.env.GITHUB_WORKSPACE + '/dist'; if(fs.existsSync(p)){console.log('Frontend build output exists:',p);} else {console.error('Missing frontend build output:',p); process.exit(1);}"
+
+      # Note: we intentionally do not attempt OS-specific cleanup here. The CI workspace
+      # is ephemeral and the test DB will be created per-run. If you want explicit cleanup
+      # add a post-job artifact removal step in the future.
+
       - name: Build & run tests (engine)
         env:
           NODUS_SQLITE_TEST: '1'
@@ -43,3 +67,8 @@ jobs:
         run: |
           cd src-tauri/nodus-engine
           cargo test --workspace --locked
+
+      - name: "Post-test: remove CI sqlite DB (best-effort)"
+        run: node -e "const fs=require('fs'); const p=process.env.GITHUB_WORKSPACE + '/ci_nodus.sqlite'; try{fs.unlinkSync(p); console.log('Removed',p);}catch(e){console.log('No file to remove',p);}"
+
+      # Post-test cleanup intentionally omitted (CI runner workspace is ephemeral).

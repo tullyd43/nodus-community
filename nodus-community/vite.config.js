@@ -24,6 +24,25 @@ export default defineConfig({
 		// Place built files where Tauri expects them
 		outDir: resolve(__dirname, "dist"),
 		emptyOutDir: true,
+		// Minification and output options
+		minify: "terser", // use 'esbuild' for faster builds, 'terser' for more control
+		sourcemap: true,
+		terserOptions: {
+			ecma: 2020,
+			compress: {
+				drop_console: true,
+				drop_debugger: true,
+				passes: 2,
+				pure_funcs: ["console.info", "console.debug"],
+			},
+			mangle: {
+				toplevel: true,
+			},
+			format: {
+				// keep license comments and /*! style banners
+				comments: /^!|@license|@preserve/,
+			},
+		},
 		rollupOptions: {
 			input: resolve(__dirname, "src", "index.html"),
 		},

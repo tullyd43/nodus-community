@@ -8,13 +8,17 @@
 		"dev": "vite",
 		"build": "vite build",
 		"preview": "vite preview --port 5173",
-		"dev:all": "concurrently \"npm run dev\" \"npx wait-on http://localhost:5173 && cross-env TAURI_DEV_PATH=http://localhost:5173 npm run tauri -- dev\""
+		"dev:all": "concurrently \"npm run dev\" \"npx wait-on http://localhost:5173 && cross-env TAURI_DEV_PATH=http://localhost:5173 npm run tauri -- dev\"",
+		"minify:single": "npx terser src/main.js -c -m -o dist/main.min.js --source-map 'url=main.min.js.map' --comments '/@license|@preserve|^!/'",
+		"minify:esbuild": "npx esbuild \"src/*.js\" --outdir=dist --minify --sourcemap"
 	},
 	"devDependencies": {
 		"@tauri-apps/cli": "^2",
 		"concurrently": "^8.2.0",
 		"cross-env": "^7.0.3",
 		"vite": "^7.2.2",
+		"terser": "^5.20.2",
+		"esbuild": "^0.18.16",
 		"wait-on": "^7.0.1"
 	},
 	"dependencies": {

@@ -1,0 +1,557 @@
+/**
+ * @file nodus-modern-grid.css
+ * @description Modern CSS Grid styles for Nodus Grid System
+ * Uses CSS Grid, custom properties, and modern web standards
+ */
+
+/* CSS Custom Properties for theming */
+:root {
+  /* Grid configuration */
+  --grid-columns: 12;
+  --grid-cell-height: 80px;
+  --grid-cell-width: auto;
+  --grid-margin: 10px;
+  --grid-transition: 0.2s ease;
+
+  /* Colors */
+  --grid-item-bg: #ffffff;
+  --grid-item-border: #ddd;
+  --grid-item-radius: 8px;
+  --grid-item-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  --grid-item-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.15);
+  
+  /* Drag and drop */
+  --grid-placeholder-bg: rgba(0, 122, 255, 0.2);
+  --grid-placeholder-border: #007bff;
+  --grid-drag-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+  
+  /* Resize handles */
+  --grid-resize-handle-color: #007bff;
+  --grid-resize-handle-size: 8px;
+  --resize-handle-opacity: 0;
+  
+  /* States */
+  --grid-locked-cursor: not-allowed;
+  --grid-dragging-opacity: 0.8;
+  --grid-resizing-opacity: 0.9;
+  
+  /* Content */
+  --grid-content-padding: 12px;
+  --grid-min-width: 100px;
+  --grid-min-height: 100px;
+}
+
+/* Modern Grid Container */
+.nodus-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--grid-columns), 1fr);
+  grid-auto-rows: var(--grid-cell-height);
+  gap: var(--grid-margin);
+  position: relative;
+  width: 100%;
+  min-height: 200px;
+  transition: var(--grid-transition);
+  
+  /* Modern performance optimizations */
+  contain: layout style;
+  will-change: auto;
+}
+
+/* Grid items (widgets) */
+.nodus-grid-item {
+  position: relative;
+  background: var(--grid-item-bg);
+  border: 1px solid var(--grid-item-border);
+  border-radius: var(--grid-item-radius);
+  box-shadow: var(--grid-item-shadow);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  cursor: grab;
+  transition: all var(--grid-transition);
+  min-width: var(--grid-min-width);
+  min-height: var(--grid-min-height);
+  
+  /* Modern browser optimizations */
+  contain: layout style;
+}
+
+.nodus-grid-item:hover {
+  box-shadow: var(--grid-item-shadow-hover);
+  transform: translateY(-1px);
+}
+
+.nodus-grid-item:focus {
+  outline: 2px solid var(--grid-resize-handle-color);
+  outline-offset: 2px;
+}
+
+/* Item content */
+.nodus-grid-item-content {
+  flex: 1;
+  padding: var(--grid-content-padding);
+  overflow: auto;
+  height: 100%;
+  position: relative;
+  
+  /* Modern scrollbar styling */
+  scrollbar-width: thin;
+  scrollbar-color: var(--grid-item-border) transparent;
+}
+
+.nodus-grid-item-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.nodus-grid-item-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nodus-grid-item-content::-webkit-scrollbar-thumb {
+  background-color: var(--grid-item-border);
+  border-radius: 3px;
+}
+
+/* Drag States */
+.nodus-grid-item.grid-dragging {
+  cursor: grabbing;
+  opacity: var(--grid-dragging-opacity);
+  z-index: 1000;
+  transition: none; /* Disable transitions during drag */
+  transform: rotate(2deg);
+}
+
+.nodus-grid-item.grid-resizing {
+  opacity: var(--grid-resizing-opacity);
+  z-index: 1000;
+}
+
+/* Resize Handles */
+.grid-resize-handle {
+  position: absolute;
+  background: var(--grid-resize-handle-color);
+  opacity: var(--resize-handle-opacity);
+  transition: opacity var(--grid-transition);
+  pointer-events: auto;
+  z-index: 10;
+  border-radius: 2px;
+}
+
+/* Show resize handles on hover */
+.nodus-grid-item:hover .grid-resize-handle {
+  --resize-handle-opacity: 0.7;
+}
+
+.nodus-grid-item.grid-resizing .grid-resize-handle,
+.nodus-grid-item:focus .grid-resize-handle {
+  --resize-handle-opacity: 1;
+}
+
+/* Individual resize handle positions */
+.grid-n {
+  top: -3px;
+  left: 25%;
+  right: 25%;
+  height: var(--grid-resize-handle-size);
+  cursor: n-resize;
+}
+
+.grid-ne {
+  top: -3px;
+  right: -3px;
+  width: 12px;
+  height: 12px;
+  cursor: ne-resize;
+  border-radius: 0 3px 0 0;
+}
+
+.grid-e {
+  top: 25%;
+  bottom: 25%;
+  right: -3px;
+  width: var(--grid-resize-handle-size);
+  cursor: e-resize;
+}
+
+.grid-se {
+  bottom: -3px;
+  right: -3px;
+  width: 12px;
+  height: 12px;
+  cursor: se-resize;
+  border-radius: 0 0 3px 0;
+}
+
+.grid-s {
+  bottom: -3px;
+  left: 25%;
+  right: 25%;
+  height: var(--grid-resize-handle-size);
+  cursor: s-resize;
+}
+
+.grid-sw {
+  bottom: -3px;
+  left: -3px;
+  width: 12px;
+  height: 12px;
+  cursor: sw-resize;
+  border-radius: 0 0 0 3px;
+}
+
+.grid-w {
+  top: 25%;
+  bottom: 25%;
+  left: -3px;
+  width: var(--grid-resize-handle-size);
+  cursor: w-resize;
+}
+
+.grid-nw {
+  top: -3px;
+  left: -3px;
+  width: 12px;
+  height: 12px;
+  cursor: nw-resize;
+  border-radius: 3px 0 0 0;
+}
+
+/* Placeholder for drag preview */
+.nodus-grid-placeholder {
+  background: var(--grid-placeholder-bg);
+  border: 2px dashed var(--grid-placeholder-border);
+  border-radius: var(--grid-item-radius);
+  transition: all 0.2s ease;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+  animation: placeholderPulse 1s infinite alternate;
+}
+
+@keyframes placeholderPulse {
+  from { opacity: 0.3; }
+  to { opacity: 0.8; }
+}
+
+/* Grid States */
+.nodus-grid.nodus-grid-animate .nodus-grid-item {
+  transition: all var(--grid-transition);
+}
+
+.nodus-grid.nodus-grid-animate .nodus-grid-item.grid-dragging,
+.nodus-grid.nodus-grid-animate .nodus-grid-item.grid-resizing {
+  transition: none;
+}
+
+.nodus-grid-static {
+  pointer-events: none;
+}
+
+.nodus-grid-static .nodus-grid-item {
+  cursor: default;
+  pointer-events: auto;
+}
+
+.nodus-grid-static .grid-resize-handle {
+  display: none;
+}
+
+.nodus-grid-float {
+  /* Floating grid - items don't compact */
+}
+
+/* Widget States */
+.grid-locked {
+  cursor: var(--grid-locked-cursor) !important;
+}
+
+.grid-locked .grid-resize-handle {
+  display: none;
+}
+
+.grid-no-resize .grid-resize-handle {
+  display: none;
+}
+
+.grid-no-move {
+  cursor: default !important;
+}
+
+.grid-no-move[draggable="true"] {
+  -webkit-user-drag: none;
+  -moz-user-select: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Drop Zone States */
+.grid-drop-active {
+  background: linear-gradient(45deg, 
+    rgba(0, 122, 255, 0.05) 25%, 
+    transparent 25%, 
+    transparent 75%, 
+    rgba(0, 122, 255, 0.05) 75%
+  );
+  background-size: 20px 20px;
+  animation: dropZoneActive 2s linear infinite;
+}
+
+@keyframes dropZoneActive {
+  0% { background-position: 0 0; }
+  100% { background-position: 20px 20px; }
+}
+
+/* Responsive One Column Mode */
+.nodus-grid-one-column-mode {
+  grid-template-columns: 1fr !important;
+  --grid-columns: 1;
+}
+
+.nodus-grid-one-column-mode .nodus-grid-item {
+  grid-column: 1 !important;
+  grid-row: auto !important;
+}
+
+.nodus-grid-one-column-mode .grid-resize-handle {
+  display: none;
+}
+
+/* Responsive breakpoints */
+@media (max-width: 768px) {
+  :root {
+    --grid-margin: 8px;
+    --grid-content-padding: 8px;
+    --grid-cell-height: 60px;
+  }
+  
+  .grid-resize-handle {
+    --grid-resize-handle-size: 12px;
+  }
+  
+  .nodus-grid:not(.nodus-grid-one-column-mode) {
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  :root {
+    --grid-margin: 6px;
+    --grid-content-padding: 6px;
+    --grid-cell-height: 50px;
+  }
+}
+
+/* Print styles */
+@media print {
+  .nodus-grid {
+    grid-gap: 5px;
+    break-inside: avoid;
+  }
+  
+  .nodus-grid-item {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    box-shadow: none;
+    border: 1px solid #000;
+  }
+  
+  .grid-resize-handle {
+    display: none;
+  }
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  :root {
+    --grid-item-border: #000;
+    --grid-placeholder-border: #000;
+    --grid-resize-handle-color: #000;
+  }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --grid-transition: none;
+  }
+  
+  .nodus-grid-placeholder {
+    animation: none;
+  }
+  
+  .grid-drop-active {
+    animation: none;
+    background: rgba(0, 122, 255, 0.1);
+  }
+}
+
+/* Dark theme support */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --grid-item-bg: #2a2a2a;
+    --grid-item-border: #555;
+    --grid-item-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    --grid-item-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --grid-placeholder-bg: rgba(255, 255, 255, 0.1);
+    --grid-placeholder-border: #fff;
+  }
+}
+
+/* Focus management for accessibility */
+.nodus-grid-item:focus-visible {
+  outline: 2px solid var(--grid-resize-handle-color);
+  outline-offset: 2px;
+}
+
+/* Screen reader support */
+.nodus-grid[aria-label]::before {
+  content: attr(aria-label);
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+/* Touch device improvements */
+@media (pointer: coarse) {
+  .grid-resize-handle {
+    --grid-resize-handle-size: 16px;
+  }
+  
+  .grid-ne, .grid-se, .grid-sw, .grid-nw {
+    width: 20px !important;
+    height: 20px !important;
+  }
+  
+  .nodus-grid-item {
+    touch-action: none;
+  }
+}
+
+/* Custom scrollbars for webkit browsers */
+.nodus-grid::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.nodus-grid::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nodus-grid::-webkit-scrollbar-thumb {
+  background-color: var(--grid-item-border);
+  border-radius: 4px;
+}
+
+/* RTL Support */
+.nodus-grid[dir="rtl"] {
+  direction: rtl;
+}
+
+.nodus-grid[dir="rtl"] .grid-resize-handle {
+  transform: scaleX(-1);
+}
+
+/* Container queries support for modern browsers */
+@supports (container-type: inline-size) {
+  .nodus-grid {
+    container-type: inline-size;
+  }
+  
+  @container (max-width: 600px) {
+    .nodus-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+}
+
+/* Subgrid support for nested grids */
+@supports (grid-template-columns: subgrid) {
+  .nodus-grid .nodus-grid {
+    grid-template-columns: subgrid;
+    grid-template-rows: subgrid;
+  }
+}
+
+/* CSS Grid fallback for older browsers */
+@supports not (display: grid) {
+  .nodus-grid {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  
+  .nodus-grid-item {
+    flex: 0 0 auto;
+    position: relative;
+  }
+}
+
+/* Nested grid support */
+.nodus-grid .nodus-grid {
+  margin: var(--grid-margin);
+  border: 1px solid var(--grid-item-border);
+  border-radius: var(--grid-item-radius);
+  background: var(--grid-item-bg);
+}
+
+/* Animation utilities */
+@keyframes gridItemEntry {
+  from {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.nodus-grid-item.entering {
+  animation: gridItemEntry 0.3s ease;
+}
+
+@keyframes gridItemExit {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+
+.nodus-grid-item.exiting {
+  animation: gridItemExit 0.3s ease;
+}
+
+/* Utility classes */
+.nodus-grid-auto-height {
+  --grid-cell-height: auto;
+  grid-auto-rows: auto;
+}
+
+.nodus-grid-dense {
+  grid-auto-flow: row dense;
+}
+
+.nodus-grid-rtl {
+  direction: rtl;
+}
+
+/* Theme variants */
+.nodus-grid.theme-minimal {
+  --grid-item-border: transparent;
+  --grid-item-shadow: none;
+  --grid-item-radius: 0;
+}
+
+.nodus-grid.theme-rounded {
+  --grid-item-radius: 16px;
+}
+
+.nodus-grid.theme-card {
+  --grid-item-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  --grid-item-shadow-hover: 0 8px 20px rgba(0, 0, 0, 0.15);
+}
