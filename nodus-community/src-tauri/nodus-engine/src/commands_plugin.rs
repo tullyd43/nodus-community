@@ -95,20 +95,16 @@ pub async fn execute_action_with_plugins(
     action_type: String,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let app_state = state.read().await;
-    
-    match app_state.execute_action(action_type, payload).await {
-        Ok(result) => {
-            // Convert ActionResult to JSON
-            Ok(serde_json::json!({
-                "success": result.success,
-                "data": result.data,
-                "error": result.error,
-                "execution_time_ms": result.execution_time_ms,
-                "side_effects": result.side_effects,
-                "plugin_executed": !result.observability_metadata.middleware_executed.is_empty(),
-            }))
-        },
+    // Dispatch using the shared AppStateType handle (avoids recreating state wrappers)
+    match crate::state_mod::execute_action(state.clone(), action_type, payload).await {
+        Ok(result) => Ok(serde_json::json!({
+            "success": result.success,
+            "data": result.data,
+            "error": result.error,
+            "execution_time_ms": result.execution_time_ms,
+            "side_effects": result.side_effects,
+            "plugin_executed": !result.observability_metadata.middleware_executed.is_empty(),
+        })),
         Err(e) => {
             tracing::error!("Action execution failed: {}", e);
             Err(format!("Action execution failed: {}", e))
@@ -249,13 +245,9 @@ pub async fn install_marketplace_plugin(
         _ => {}
     }
     
-    // TODO: Implement actual marketplace plugin download and installation
-    // For now, return mock response
-    Ok(PluginRegistrationResponse {
-        success: false,
-        plugin_id,
-        message: "Marketplace plugin installation not yet implemented".to_string(),
-    })
+    // Marketplace installation not implemented yet. Return a clear error so callers
+    // can distinguish between a real install and the unimplemented stub.
+    Err(format!("Marketplace plugin installation not yet implemented for plugin {}. Use upload or load_plugin_from_path instead.", plugin_id))
 }
 
 /// Get system plugin status (engine-level)

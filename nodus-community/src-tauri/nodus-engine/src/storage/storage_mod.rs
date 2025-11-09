@@ -197,12 +197,139 @@ impl Default for StorageManager {
     }
 }
 
+/// Simple in-memory storage adapter used as the default backend in the
+/// community build when platform-specific adapters (IndexedDB) are not
+/// available. This provides predictable behavior during desktop/Tauri
+/// runs and unit tests.
+pub struct MemoryAdapter {
+    inner: Arc<RwLock<HashMap<String, StoredEntity>>>,
+}
+
+impl MemoryAdapter {
+    pub fn new() -> Self {
+        Self { inner: Arc::new(RwLock::new(HashMap::new())) }
+    }
+}
+
+impl Default for MemoryAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl StorageAdapter for MemoryAdapter {
+    async fn initialize(&mut self) -> Result<(), StorageError> {
+        // Nothing to initialize for in-memory store
+        Ok(())
+    }
+
+    async fn health_check(&self) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn get(&self, key: &str, _ctx: &StorageContext) -> Result<Option<StoredEntity>, StorageError> {
+        let map = self.inner.read().await;
+        Ok(map.get(key).cloned())
+    }
+
+    async fn put(&self, key: &str, entity: StoredEntity, _ctx: &StorageContext) -> Result<(), StorageError> {
+        let mut map = self.inner.write().await;
+        map.insert(key.to_string(), entity);
+        Ok(())
+    }
+
+    async fn delete(&self, key: &str, _ctx: &StorageContext) -> Result<(), StorageError> {
+        let mut map = self.inner.write().await;
+        if let Some(e) = map.get_mut(key) {
+            e.deleted_at = Some(Utc::now());
+            e.sync_status = SyncStatus::Pending;
+        }
+        Ok(())
+    }
+
+    async fn purge(&self, key: &str, _ctx: &StorageContext) -> Result<(), StorageError> {
+        let mut map = self.inner.write().await;
+        map.remove(key);
+        Ok(())
+    }
+
+    async fn query(&self, query: &StorageQuery, _ctx: &StorageContext) -> Result<Vec<StoredEntity>, StorageError> {
+        let map = self.inner.read().await;
+        let mut results = Vec::new();
+        for (_k, v) in map.iter() {
+            if let Some(ref et) = query.entity_type {
+                if &v.entity_type != et { continue; }
+            }
+            results.push(v.clone());
+        }
+        Ok(results)
+    }
+
+    async fn get_by_type(&self, entity_type: &str, _ctx: &StorageContext) -> Result<Vec<StoredEntity>, StorageError> {
+        let map = self.inner.read().await;
+        Ok(map.values().filter(|v| v.entity_type == entity_type).cloned().collect())
+    }
+
+    async fn batch_put(&self, entities: Vec<(String, StoredEntity)>, _ctx: &StorageContext) -> Result<(), StorageError> {
+        let mut map = self.inner.write().await;
+        for (k, v) in entities {
+            map.insert(k, v);
+        }
+        Ok(())
+    }
+
+    async fn get_stats(&self) -> Result<StorageStats, StorageError> {
+        let map = self.inner.read().await;
+        let mut by_type: HashMap<String, u64> = HashMap::new();
+        for v in map.values() {
+            *by_type.entry(v.entity_type.clone()).or_insert(0) += 1;
+        }
+        Ok(StorageStats {
+            total_entities: map.len() as u64,
+            entities_by_type: by_type,
+            storage_size_bytes: 0,
+            last_sync: None,
+            pending_changes: 0,
+        })
+    }
+
+    async fn export_data(&self, _ctx: &StorageContext) -> Result<Vec<u8>, StorageError> {
+        Err(StorageError::BackendError { backend: "memory".to_string(), error: "export not implemented".to_string() })
+    }
+
+    async fn import_data(&mut self, _data: &[u8], _ctx: &StorageContext) -> Result<(), StorageError> {
+        Err(StorageError::BackendError { backend: "memory".to_string(), error: "import not implemented".to_string() })
+    }
+}
+
 impl StorageManager {
     /// Create a new storage manager (community version)
     pub fn new() -> Self {
         Self {
-            adapters: HashMap::new(),
-            primary_backend: "indexeddb".to_string(),
+            adapters: {
+                let mut m = HashMap::new();
+                // Register in-memory adapter by default so desktop/Tauri runs
+                // work out of the box when IndexedDB is not available.
+                // Register in-memory adapter as a fallback
+                m.insert("memory".to_string(), Box::new(MemoryAdapter::new()) as Box<dyn StorageAdapter>);
+
+                // Always register a SQLite adapter by default. Use NODUS_SQLITE_DB env
+                // to override the path; otherwise default to a local file `./nodus.sqlite`.
+                let db_path = std::env::var("NODUS_SQLITE_DB").unwrap_or_else(|_| "./nodus.sqlite".to_string());
+                let sqlite_adapter = super::sqlite_adapter::SqliteAdapter::new(db_path);
+                m.insert("sqlite".to_string(), Box::new(sqlite_adapter) as Box<dyn StorageAdapter>);
+
+                m
+            },
+            // Determine primary backend from env or default to memory
+            primary_backend: if let Ok(backend) = std::env::var("NODUS_STORAGE_BACKEND") {
+                backend
+            } else if std::env::var("NODUS_SQLITE_DB").is_ok() {
+                "sqlite".to_string()
+            } else {
+                "memory".to_string()
+            },
             fallback_backends: vec!["memory".to_string()],
             cache: Arc::new(RwLock::new(HashMap::new())),
             metrics: StorageMetrics {
@@ -432,7 +559,7 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            primary_backend: "indexeddb".to_string(),
+            primary_backend: "sqlite".to_string(),
             fallback_backends: vec!["memory".to_string()],
             cache_ttl_seconds: 300,
             max_cache_size: 1000,

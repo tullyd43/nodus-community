@@ -187,7 +187,7 @@ impl UniversalPluginSystem {
     /// Register JavaScript plugin (with license validation)
     pub async fn register_js_plugin(&self, mut js_plugin: JSPlugin) -> Result<(), PluginError> {
         // Check license requirements FIRST (uses your license system)
-        self.check_license_requirements(&js_plugin.license_requirements).await?;
+        self.check_license_requirements(&js_plugin.license_requirements, Some(&js_plugin.id)).await?;
 
         // Check signature if required (enterprise feature)
         if matches!(self.plugin_access_mode, PluginAccessMode::SignedOnly) {
@@ -196,8 +196,12 @@ impl UniversalPluginSystem {
                     plugin_id: js_plugin.id.clone() 
                 });
             }
-            // TODO: Implement actual signature verification
-            tracing::info!("Signature validation passed for plugin: {}", js_plugin.id);
+            // Perform a minimal signature verification pass (stub).
+            // In production this should verify a cryptographic signature.
+            if !Self::verify_plugin_signature(&js_plugin) {
+                return Err(PluginError::InvalidSignature { plugin_id: js_plugin.id.clone() });
+            }
+            tracing::info!("Signature validation (stub) passed for plugin: {}", js_plugin.id);
         }
 
         // Check dependencies
@@ -248,7 +252,7 @@ impl UniversalPluginSystem {
             for (plugin_id, js_plugin) in js_plugins.iter() {
                 if js_plugin.enabled && js_plugin.handled_actions.contains(action_type) {
                     // Check license requirements again at execution time
-                    if let Err(_) = self.check_license_requirements(&js_plugin.license_requirements).await {
+                    if self.check_license_requirements(&js_plugin.license_requirements, Some(&js_plugin.id)).await.is_err() {
                         tracing::warn!("Skipping plugin {} due to license requirements", plugin_id);
                         continue;
                     }
@@ -291,7 +295,8 @@ impl UniversalPluginSystem {
                 let handled_actions = rust_plugin.get_handled_actions();
                 if handled_actions.contains(&action_type.to_string()) {
                     // Check license requirements
-                    if let Err(_) = self.check_license_requirements(rust_plugin.get_license_requirements()).await {
+                    let rust_plugin_id = rust_plugin.get_metadata().plugin_id.to_string();
+                    if self.check_license_requirements(rust_plugin.get_license_requirements(), Some(&rust_plugin_id)).await.is_err() {
                         tracing::warn!("Skipping Rust plugin {} due to license requirements", plugin_id);
                         continue;
                     }
@@ -348,7 +353,7 @@ impl UniversalPluginSystem {
                     version: metadata.version.clone(),
                     plugin_type: PluginType::Rust,
                     enabled: true, // Rust plugins are always enabled once loaded
-                    loaded_at: Utc::now(), // TODO: Track actual load time
+                    loaded_at: Utc::now(),
                     license_tier_required: license_req.minimum_tier.clone(),
                 });
             }
@@ -381,27 +386,37 @@ impl UniversalPluginSystem {
         }))
     }
     
+    /// Minimal plugin signature verification stub.
+    /// Replace with real cryptographic verification in production.
+    fn verify_plugin_signature(js_plugin: &JSPlugin) -> bool {
+        tracing::debug!("Verifying plugin signature (stub) for {}", js_plugin.id);
+        // Always return true for now; real implementation should verify signature blob
+        true
+    }
+
     /// Check license requirements (integrates with your license system)
-    async fn check_license_requirements(&self, requirements: &LicenseRequirement) -> Result<(), PluginError> {
+    /// `plugin_id` is optional and used to produce better error messages when present.
+    async fn check_license_requirements(&self, requirements: &LicenseRequirement, plugin_id: Option<&str>) -> Result<(), PluginError> {
+        let pid = plugin_id.unwrap_or("unknown").to_string();
         // Check minimum tier
         if self.license_tier < requirements.minimum_tier {
             return Err(PluginError::LicenseInsufficient {
-                plugin_id: "unknown".to_string(), // TODO: Pass plugin ID
+                plugin_id: pid.clone(),
                 required_tier: requirements.minimum_tier.clone(),
                 current_tier: self.license_tier.clone(),
             });
         }
-        
+
         // Check signature requirements
         if requirements.requires_signed && matches!(self.plugin_access_mode, PluginAccessMode::UnsignedAllowed) {
             // This plugin requires signed access but we're in unsigned mode
             return Err(PluginError::LicenseInsufficient {
-                plugin_id: "unknown".to_string(),
+                plugin_id: pid.clone(),
                 required_tier: LicenseTier::Enterprise, // Signed plugins need Enterprise
                 current_tier: self.license_tier.clone(),
             });
         }
-        
+
         Ok(())
     }
     

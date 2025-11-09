@@ -16,7 +16,7 @@ use crate::universal_plugin_system::{UniversalPluginSystem, PluginInfo, PluginEr
 use crate::action_dispatcher::ActionResult;
 
 /// Application state that properly integrates with your license system
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct AppState {
     // THE KEY INTEGRATION: Use your actual license manager
     pub license_manager: Arc<LicenseManager>,
@@ -39,6 +39,9 @@ pub struct AppState {
     pub active_async_operation_starts: Arc<RwLock<HashMap<String, chrono::DateTime<chrono::Utc>>>>,
     pub completed_operations_count: Arc<RwLock<u64>>,
 }
+
+/// Shared AppState handle used across engine modules
+pub type AppStateType = Arc<RwLock<AppState>>;
 
 /// Basic app configuration (aligned with license system)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +82,71 @@ impl AppState {
         let storage = Arc::new(crate::storage::StorageManager::new());
         let action_dispatcher = Arc::new(crate::action_dispatcher::ActionDispatcher::new().await?);
         let async_orchestrator = Arc::new(crate::async_orchestrator::AsyncOrchestrator::new().await?);
+
+        // Register default core handlers and middleware so frontend actions
+        // like `grid.*`, `system.*`, and `ui.*` are handled out-of-the-box in
+        // the community build. These are lightweight and intentionally
+        // conservative: they provide sensible defaults and avoid falling
+        // back to offline mode when the app initializes.
+        {
+            // Register the GridActionHandler (defined in action_dispatcher.rs)
+            let ad = action_dispatcher.clone();
+            ad.register_handler(crate::action_dispatcher::GridActionHandler).await;
+
+            // Small system handler for `system.*` actions (ping/bootstrap)
+            struct SystemHandler;
+            #[async_trait::async_trait]
+            impl crate::action_dispatcher::ActionHandler for SystemHandler {
+                async fn execute(
+                    &self,
+                    action: &crate::action_dispatcher::Action,
+                    _context: &crate::action_dispatcher::ActionContext,
+                    _app_state: crate::state_mod::AppStateType,
+                ) -> Result<serde_json::Value, crate::action_dispatcher::ActionError> {
+                    match action.action_type.as_str() {
+                        "system.ping" => Ok(serde_json::json!({"status": "pong"})),
+                        "system.bootstrap.completed" => Ok(serde_json::json!({"status": "ok"})),
+                        _ => Ok(serde_json::json!({"status": "unhandled_system_action", "action": action.action_type})),
+                    }
+                }
+
+                fn action_type(&self) -> &str {
+                    "system.*"
+                }
+            }
+
+            ad.register_handler(SystemHandler).await;
+
+            // Small UI handler for `ui.*` actions (toasts, basic UI events)
+            struct UiHandler;
+            #[async_trait::async_trait]
+            impl crate::action_dispatcher::ActionHandler for UiHandler {
+                async fn execute(
+                    &self,
+                    action: &crate::action_dispatcher::Action,
+                    _context: &crate::action_dispatcher::ActionContext,
+                    _app_state: crate::state_mod::AppStateType,
+                ) -> Result<serde_json::Value, crate::action_dispatcher::ActionError> {
+                    match action.action_type.as_str() {
+                        "ui.toast.show" => {
+                            // Return a simple acknowledgment so the frontend can continue
+                            Ok(serde_json::json!({"status": "toast_ack"}))
+                        }
+                        _ => Ok(serde_json::json!({"status": "unhandled_ui_action", "action": action.action_type})),
+                    }
+                }
+
+                fn action_type(&self) -> &str {
+                    "ui.*"
+                }
+            }
+
+            ad.register_handler(UiHandler).await;
+
+            // Register logging middleware from the core dispatcher so we get
+            // consistent logs for middleware hooks during development.
+            ad.add_middleware(crate::action_dispatcher::LoggingMiddleware).await;
+        }
 
         // Initialize universal plugin system with license constraints
         let plugin_system = Arc::new(
@@ -181,40 +249,7 @@ impl AppState {
         self.license_manager.has_feature(feature).await
     }
 
-    /// Execute action through unified system (integrates plugin system + license)
-    pub async fn execute_action(
-        &self,
-        action_type: String,
-        payload: serde_json::Value,
-    ) -> Result<ActionResult, AppStateError> {
-        // Create action and context using the Action/ActionContext helpers
-        let action = crate::action_dispatcher::Action::new(&action_type, payload.clone())
-            .with_metadata(None, None, None);
-
-        // ActionContext::new expects string refs for user and session; use empty strings when not present
-        let context = crate::action_dispatcher::ActionContext::new("", "");
-
-        // Try plugin system first (with license constraints)
-        match self.plugin_system.try_execute_action(&action, &context, self).await {
-            Ok(Some(result)) => {
-                tracing::debug!("Action {} handled by plugin system", action_type);
-                Ok(result)
-            }
-            Ok(None) => {
-                // No plugin handled it, try core action dispatcher
-                tracing::debug!("Action {} passed to core dispatcher", action_type);
-                // ActionDispatcher exposes `execute_action` which requires the app state reference
-                self.action_dispatcher.execute_action(action, context, self).await
-                    .map_err(AppStateError::from)
-            }
-            Err(plugin_error) => {
-                tracing::error!("Plugin system error: {}", plugin_error);
-                // Fallback to core dispatcher if plugin fails
-                self.action_dispatcher.execute_action(action, context, self).await
-                    .map_err(AppStateError::from)
-            }
-        }
-    }
+    // Action dispatch helpers
 
     /// Load a plugin (uses your license system constraints)
     pub async fn load_plugin(&self, plugin_path: &str) -> Result<String, AppStateError> {
@@ -295,7 +330,39 @@ impl AppState {
     }
 }
 
-/// Enhanced app statistics
+/// Dispatch an action using the shared `AppStateType` handle.
+/// This is the canonical entrypoint when callers already have the
+/// Arc<RwLock<AppState>> handle (e.g. Tauri wrappers, tests).
+pub async fn execute_action(
+    state: AppStateType,
+    action_type: String,
+    payload: serde_json::Value,
+) -> Result<ActionResult, AppStateError> {
+    // Create action and context
+    let action = crate::action_dispatcher::Action::new(&action_type, payload.clone()).with_metadata(None, None, None);
+    let context = crate::action_dispatcher::ActionContext::new("", "");
+
+    // Try plugin system first using a read lock
+    let guard = state.read().await;
+    match guard.plugin_system.try_execute_action(&action, &context, &guard).await {
+        Ok(Some(result)) => Ok(result),
+        Ok(None) => {
+            // No plugin handled it: clone dispatcher, drop guard, then dispatch
+            let dispatcher = guard.action_dispatcher.clone();
+            drop(guard);
+            dispatcher.execute_action(action, context, state.clone()).await.map_err(AppStateError::from)
+        }
+        Err(plugin_error) => {
+            tracing::error!("Plugin system error: {}", plugin_error);
+            let dispatcher = guard.action_dispatcher.clone();
+            drop(guard);
+            dispatcher.execute_action(action, context, state.clone()).await.map_err(AppStateError::from)
+        }
+
+    }
+}
+
+    /// Enhanced app statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppStats {
     pub initialized: bool,
@@ -338,9 +405,12 @@ impl From<crate::action_dispatcher::ActionError> for AppStateError {
         AppStateError::InitializationFailed { reason: format!("ActionDispatcher error: {}", e) }
     }
 }
+// End impl AppState
 
 impl From<crate::async_orchestrator::OrchestrationError> for AppStateError {
     fn from(e: crate::async_orchestrator::OrchestrationError) -> Self {
         AppStateError::InitializationFailed { reason: format!("Orchestrator error: {}", e) }
     }
 }
+
+// (balanced)

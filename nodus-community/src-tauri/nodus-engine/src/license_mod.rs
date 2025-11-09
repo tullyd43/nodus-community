@@ -77,7 +77,7 @@ pub struct LicenseInfo {
 }
 
 /// License limits based on tier
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LicenseLimits {
     pub max_users: Option<u32>,
     pub max_storage_gb: Option<u32>,
@@ -546,18 +546,7 @@ pub enum LicenseError {
     Json(#[from] serde_json::Error),
 }
 
-impl Default for LicenseLimits {
-    fn default() -> Self {
-        Self {
-            max_users: None,      // No limit
-            max_storage_gb: None, // No limit
-            max_operations_per_hour: None,
-            max_api_calls_per_day: None,
-            max_concurrent_sessions: None,
-            max_tenants: None,
-        }
-    }
-}
+// Default implementation derived above
 
 #[cfg(test)]
 mod tests {

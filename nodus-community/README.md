@@ -42,8 +42,8 @@ The `dev:all` script is implemented to wait for the Vite dev server to be ready 
 
 What it runs under the hood:
 
-- Starts Vite (`npm run dev`).
-- Runs `wait-on http://localhost:5173` and only when that resolves starts `npm run tauri -- dev`.
+-   Starts Vite (`npm run dev`).
+-   Runs `wait-on http://localhost:5173` and only when that resolves starts `npm run tauri -- dev`.
 
 Use the shortcut:
 
@@ -81,3 +81,36 @@ Notes
 
 -   The Vite config (`vite.config.js`) defines path aliases so you can keep imports like `@platform/actions/ActionDispatcher.js` in source. Vite rewrites those during dev and build. The importmap in `src/index.html` is a compatibility fallback for direct static serving.
 -   If you want me to change the `frontendDist` path or tweak the dev port, tell me which values you prefer and I'll update `src-tauri/tauri.conf.json` and `vite.config.js` accordingly.
+
+## Storage (SQLite default)
+
+The engine uses SQLite by default for on-disk persistence. This repository defaults to a local file named `./nodus.sqlite` so development is simple and reproducible.
+
+Environment overrides
+
+-   To change the DB file path, set the `NODUS_SQLITE_DB` environment variable before starting the app. Example (PowerShell):
+
+```powershell
+$env:NODUS_SQLITE_DB = 'C:\Users\you\AppData\Local\nodus\nodus.sqlite'
+npm run dev:all
+```
+
+-   To explicitly select which registered storage backend to use (for example `sqlite` or `memory`), set `NODUS_STORAGE_BACKEND`:
+
+```powershell
+$env:NODUS_STORAGE_BACKEND = 'sqlite'
+npm run dev:all
+```
+
+Why the default is `./nodus.sqlite`
+
+-   It's simple and predictable for contributors and CI.
+-   You can always override it with `NODUS_SQLITE_DB` for packaged installs or platform-specific data locations.
+
+Suggested platform-specific locations (optional)
+
+-   Windows: `%LOCALAPPDATA%\nodus\nodus.sqlite`
+-   macOS: `~/Library/Application Support/nodus/nodus.sqlite`
+-   Linux: `$XDG_DATA_HOME/nodus/nodus.sqlite` or `~/.local/share/nodus/nodus.sqlite`
+
+If you want me to change the default to a platform-specific path instead, say the word and I'll update the startup logic accordingly.

@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use crate::state_mod::AppStateType;
 use std::collections::HashMap;
 
 /// Action Dispatcher - Simplified for community version
@@ -69,7 +70,7 @@ pub trait ActionHandler: Send + Sync {
         &self,
         action: &Action,
         context: &ActionContext,
-        app_state: &crate::state_mod::AppState,
+        app_state: AppStateType,
     ) -> Result<serde_json::Value, ActionError>;
     
     /// Get the action type this handler supports
@@ -252,7 +253,7 @@ impl ActionDispatcher {
         &self,
         action: Action,
         context: ActionContext,
-        app_state: &crate::state_mod::AppState,
+        app_state: AppStateType,
     ) -> Result<ActionResult, ActionError> {
         let start_time = std::time::Instant::now();
         
@@ -282,8 +283,7 @@ impl ActionDispatcher {
             // Support simple wildcard handlers registered as `prefix.*`, e.g. `grid.*`
             handlers.values().find(|h| {
                 let pattern = h.action_type();
-                if pattern.ends_with(".*") {
-                    let prefix = &pattern[..pattern.len() - 2];
+                if let Some(prefix) = pattern.strip_suffix(".*") {
                     action.action_type.starts_with(prefix)
                 } else {
                     false
@@ -295,8 +295,8 @@ impl ActionDispatcher {
             action_type: action.action_type.clone(),
         })?;
 
-        // Use the provided app_state parameter (safer than the previous null-deref)
-        let result = handler.execute(&action, &context, app_state).await;
+        // Call handler with the shared AppStateType (Arc<RwLock<AppState>>)
+        let result = handler.execute(&action, &context, app_state.clone()).await;
         
         // Create result for middleware processing
         let mut action_result = match result {
@@ -492,7 +492,7 @@ impl ActionHandler for GridActionHandler {
         &self,
         action: &Action,
         _context: &ActionContext,
-        _app_state: &crate::state_mod::AppState,
+        app_state: AppStateType,
     ) -> Result<serde_json::Value, ActionError> {
         match action.action_type.as_str() {
             "grid.save_config" => {
@@ -507,9 +507,17 @@ impl ActionHandler for GridActionHandler {
                 println!("[GridActionHandler] Moving grid block");
                 Ok(serde_json::json!({"status": "moved"}))
             },
-            _ => Err(ActionError::ExecutionError {
-                message: format!("Unknown grid action: {}", action.action_type),
-            }),
+            _ => {
+                // Delegate to grid dispatcher using the provided shared state
+                match crate::commands_grid::dispatch_action(
+                    action.action_type.clone(),
+                    action.payload.clone(),
+                    app_state.clone(),
+                ).await {
+                    Ok(v) => Ok(v),
+                    Err(e) => Err(ActionError::ExecutionError { message: e }),
+                }
+            }
         }
     }
     
