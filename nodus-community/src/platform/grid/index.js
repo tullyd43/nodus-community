@@ -1,14 +1,17 @@
 /**
- * @file index.js (Integrated with GridConfigSystem)
- * @description Complete modern grid functionality with centralized configuration
+ * @file index.js
+ * @description Modern grid factory and utilities with configurable drag thresholds
  */
-
-// Modern grid components with config integration (use local files)
 import { ModernGrid } from "./Grid.js";
 import { ModernGridBlock } from "./components/GridBlock.js";
 import { gridConfig } from "./utils/GridConfigSystem.js";
+import {
+	getGrid as getCachedGrid,
+	saveGrid as saveCachedGrid,
+	getKV,
+} from "../storage/indexeddb.js";
 
-// Component exports
+// Component exports (unchanged)
 import { GridTab } from "./components/GridTab.js";
 import { GridTabs } from "./components/GridTabs.js";
 import { GridCell } from "./components/GridCell.js";
@@ -25,7 +28,7 @@ export { ModernGrid, ModernGridBlock, GridTab, GridTabs, GridCell, GridLayout };
 export { normalizeConfig, validateConfig, createDefaultConfig };
 
 /**
- * Modern Grid Factory - Primary API (INTEGRATED WITH CONFIG SYSTEM)
+ * Modern Grid Factory - Primary API
  */
 export async function createModernGrid(container, options = {}) {
 	const element =
@@ -37,19 +40,17 @@ export async function createModernGrid(container, options = {}) {
 		throw new Error(`Modern grid container not found: ${container}`);
 	}
 
-	// Initialize config system before creating grid
+	// Initialize config system before creating grid (includes new drag threshold system)
 	await gridConfig.initialize();
 
-	const grid = new ModernGrid({
+	const grid = new ModernGrid(element, {
 		...options,
 		actionDispatcher:
 			options.actionDispatcher || window.__nodus?.actionDispatcher,
 		orchestrator: options.orchestrator || window.__nodus?.asyncOrchestrator,
 	});
 
-	grid.mount(element);
-
-	// Process existing widgets in HTML - USE CONFIG DEFAULTS, NOT HARDCODED!
+	// Process existing widgets in HTML - USE CONFIG DEFAULTS
 	const existingItems = element.querySelectorAll(".nodus-grid-item");
 	existingItems.forEach((item) => {
 		const defaultSize = gridConfig.getDefaultBlockSize();
@@ -57,7 +58,6 @@ export async function createModernGrid(container, options = {}) {
 		const itemData = {
 			x: parseInt(item.dataset.gridX) || 0,
 			y: parseInt(item.dataset.gridY) || 0,
-			// USE CONFIG DEFAULTS instead of hardcoded 1,1
 			w: parseInt(item.dataset.gridW) || defaultSize.w,
 			h: parseInt(item.dataset.gridH) || defaultSize.h,
 			minW: parseInt(item.dataset.gridMinW) || 1,
@@ -83,6 +83,99 @@ export async function createModernGrid(container, options = {}) {
 	// Load CSS if not already loaded
 	loadModernGridCSS();
 
+	// Attempt to load cached grid state for faster startup
+	try {
+		const cache = await getCachedGrid(grid.gridId);
+		if (cache && Array.isArray(cache.widgets) && cache.widgets.length) {
+			console.log(
+				`[ModernGrid] Loaded ${cache.widgets.length} widgets from cache for grid ${grid.gridId}`
+			);
+			// Load cached widgets quickly (skip backend registration)
+			grid.batchMode = true;
+			cache.widgets.forEach((w) => {
+				const opts = {
+					...w,
+					id: w.id || w.serverId || undefined,
+					skipBackend: true,
+				};
+				grid.addWidget(opts);
+			});
+			grid.batchMode = false;
+			grid.updateGridHeight();
+
+			// 🎯 NEW: Restore drag threshold preferences from cache
+			if (cache.dragThreshold && cache.dragThreshold.preset) {
+				grid.setDragSensitivity(cache.dragThreshold.preset);
+			}
+		}
+	} catch (err) {
+		console.warn("[ModernGrid] Failed to load cached grid:", err);
+	}
+
+	// In background, fetch authoritative server state and reconcile
+	(async () => {
+		try {
+			const dispatcher =
+				options.actionDispatcher || window.__nodus?.actionDispatcher;
+			const orchestrator =
+				options.orchestrator || window.__nodus?.asyncOrchestrator;
+			let serverState = null;
+
+			if (dispatcher) {
+				if (orchestrator) {
+					const runner = orchestrator.createRunner("load_grid_state");
+					serverState = await runner.run(() =>
+						dispatcher.dispatch("grid.state.get", {
+							gridId: grid.gridId,
+						})
+					);
+				} else {
+					serverState = await dispatcher.dispatch("grid.state.get", {
+						gridId: grid.gridId,
+					});
+				}
+			}
+
+			if (serverState && Array.isArray(serverState.widgets)) {
+				// Simple reconciliation: if server differs, replace local widgets
+				const cached = await getCachedGrid(grid.gridId);
+				const cachedWidgets = (cached && cached.widgets) || [];
+				const same =
+					JSON.stringify(cachedWidgets) ===
+					JSON.stringify(serverState.widgets);
+				if (!same) {
+					console.log(
+						"[ModernGrid] Server grid state differs from cache – reconciling"
+					);
+					grid.batchMode = true;
+					grid.clear();
+					serverState.widgets.forEach((w) => {
+						grid.addWidget({ ...w, id: w.id, skipBackend: true });
+					});
+					grid.batchMode = false;
+					grid.updateGridHeight();
+					// Persist server state to cache
+					await saveCachedGrid(grid.gridId, grid.serialize());
+				}
+			}
+
+			// Load user's drag threshold preferences from local KV store (fast)
+			try {
+				const prefs = await getKV("preferences:grid.dragThreshold");
+				if (prefs && prefs.preset) {
+					grid.setDragSensitivity(prefs.preset);
+				}
+			} catch (error) {
+				console.warn(
+					"[ModernGrid] Failed to load cached user prefs:",
+					error
+				);
+			}
+		} catch (err) {
+			console.warn("[ModernGrid] Error fetching server grid state:", err);
+		}
+	})();
+
 	return grid;
 }
 
@@ -90,20 +183,24 @@ export async function createModernGrid(container, options = {}) {
  * Initialize modern grid with backend integration
  */
 export async function initializeModernGrid(container, options = {}) {
+	const element =
+		typeof container === "string"
+			? document.querySelector(container)
+			: container;
+
+	if (!element) {
+		throw new Error(`Modern grid container not found: ${container}`);
+	}
+
 	await gridConfig.initialize();
 
-	const grid = new ModernGrid({
+	const grid = new ModernGrid(element, {
 		...options,
 		actionDispatcher:
 			options.actionDispatcher || window.__nodus?.actionDispatcher,
 		orchestrator: options.orchestrator || window.__nodus?.asyncOrchestrator,
-		container:
-			typeof container === "string"
-				? document.querySelector(container)
-				: container,
 	});
 
-	grid.mount(grid.container || document.body);
 	return grid;
 }
 
@@ -138,7 +235,7 @@ function loadModernGridCSS() {
 }
 
 /**
- * Enhanced factory for specific use cases - INTEGRATED WITH CONFIG
+ * Enhanced factory for specific use cases
  */
 export async function createDashboardGrid(container, options = {}) {
 	await gridConfig.initialize();
@@ -194,47 +291,7 @@ export async function createStaticGrid(container, options = {}) {
 	});
 }
 
-/**
- * Migration helpers - INTEGRATED WITH CONFIG
- */
-export async function enhanceExistingGrid(existingGridSelector) {
-	console.log("🔄 Enhancing existing grid with modern functionality...");
-
-	const existingElement = document.querySelector(existingGridSelector);
-	if (!existingElement) {
-		console.error("Existing grid not found:", existingGridSelector);
-		return null;
-	}
-
-	await gridConfig.initialize();
-	const defaultSize = gridConfig.getDefaultBlockSize();
-
-	// Extract current configuration
-	const widgets = Array.from(
-		existingElement.querySelectorAll(".grid-item, .card, .widget")
-	).map((item) => ({
-		x: parseInt(item.dataset.x) || 0,
-		y: parseInt(item.dataset.y) || 0,
-		// Use config defaults instead of hardcoded 1,1
-		w: parseInt(item.dataset.w) || defaultSize.w,
-		h: parseInt(item.dataset.h) || defaultSize.h,
-		content: item.innerHTML || "",
-	}));
-
-	// Create modern grid using config values
-	const modernGrid = createModernGrid(existingElement, {
-		animate: gridConfig.get("animate"),
-		float: gridConfig.get("float"),
-	});
-
-	// Load widgets
-	widgets.forEach((widget) => {
-		modernGrid.addWidget(widget);
-	});
-
-	console.log("✅ Enhancement complete - modern grid ready");
-	return modernGrid;
-}
+// (Migration helpers removed — legacy compatibility support eliminated)
 
 /**
  * Performance and debugging helpers - ENHANCED WITH CONFIG INFO
@@ -268,6 +325,8 @@ export const ModernGridDebug = {
 				staticGrid: gridConfig.get("staticGrid"),
 				animate: gridConfig.get("animate"),
 				maxLiveReflowWidgets: gridConfig.get("maxLiveReflowWidgets"),
+				// 🎯 NEW: Include drag threshold configuration
+				dragThreshold: gridConfig.getDragThresholdInfo(),
 			},
 			widgets: Array.from(grid.widgets.values()).map((w) =>
 				w.serialize()
@@ -316,12 +375,14 @@ export const ModernGridDebug = {
 			configuredColumns: gridConfig.get("columns"),
 			configuredDefaultSize: gridConfig.getDefaultBlockSize(),
 			maxReflowWidgets: gridConfig.get("maxLiveReflowWidgets"),
+			// 🎯 NEW: Include drag threshold info in stats
+			dragThreshold: gridConfig.getDragThresholdInfo(),
 		};
 	},
 };
 
 /**
- * Configuration utilities - NEW
+ * Configuration utilities - ENHANCED WITH DRAG THRESHOLDS
  */
 export const ModernGridConfig = {
 	// Get current configuration
@@ -335,6 +396,14 @@ export const ModernGridConfig = {
 	disableReflow: () => gridConfig.set("float", true),
 	enableAnimations: () => gridConfig.set("animate", true),
 	disableAnimations: () => gridConfig.set("animate", false),
+
+	// 🎯 NEW: Drag threshold configuration shortcuts
+	setDragSensitivity: (preset) => gridConfig.setDragSensitivityPreset(preset),
+	getDragThreshold: () => gridConfig.getDragThresholdInfo(),
+	setCustomThreshold: (percentage) => {
+		gridConfig.set("dragThreshold.method", "custom");
+		gridConfig.set("dragThreshold.percentage", percentage);
+	},
 
 	// Preset configurations
 	setSquareBlocks: () => {
@@ -367,7 +436,7 @@ export const ModernGridConfig = {
 };
 
 /**
- * Theme utilities
+ * Theme utilities (unchanged)
  */
 export const ModernGridThemes = {
 	// Apply minimal theme
@@ -404,7 +473,7 @@ export const ModernGridThemes = {
 };
 
 /**
- * Plugin system for extensibility
+ * Plugin system for extensibility (unchanged)
  */
 export class ModernGridPlugin {
 	constructor(name, config = {}) {
@@ -441,20 +510,15 @@ if (typeof document !== "undefined") {
 	loadModernGridCSS();
 }
 
-// Default export
+// Default export (explicit, no legacy aliases)
 export default {
-	// Modern components
 	ModernGrid,
 	ModernGridBlock,
-
-	// Original atomic components
-	Grid: ModernGrid, // Compatibility alias
-	GridBlock: ModernGridBlock,
 	GridTab,
 	GridTabs,
 	GridCell,
 
-	// Factories (all integrated with config)
+	// Factories
 	createModernGrid,
 	initializeModernGrid,
 	createWidget,
@@ -462,14 +526,11 @@ export default {
 	createKanbanGrid,
 	createStaticGrid,
 
-	// Enhancement
-	enhanceExistingGrid,
-
 	// Utilities
 	ModernGridDebug,
 	ModernGridThemes,
 	ModernGridPlugin,
 
-	// Configuration utilities (NEW)
+	// Configuration utilities
 	ModernGridConfig,
 };

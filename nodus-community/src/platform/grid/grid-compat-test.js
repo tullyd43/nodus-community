@@ -16,7 +16,7 @@ if (
 	};
 }
 
-import ModernGrid from "./Grid.js";
+import { ModernGrid } from "./Grid.js";
 
 console.debug("[grid-compat-test] module loaded");
 
@@ -31,16 +31,13 @@ function testCompleteCompatibility() {
 	container.style.border = "1px dashed rgba(0,0,0,0.1)";
 	document.body.appendChild(container);
 
-	const grid = new ModernGrid({
+	const grid = new ModernGrid(container, {
 		column: 12,
 		float: false,
 		margin: 10,
 		animate: true,
 		className: "grid-compat-test",
 	});
-
-	// mount grid into the container
-	grid.mount && grid.mount(container);
 
 	// Test 1: Auto-positioning
 	console.log("Test 1: Auto-positioning");

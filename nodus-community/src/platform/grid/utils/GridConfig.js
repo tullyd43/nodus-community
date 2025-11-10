@@ -1,7 +1,7 @@
 /**
- * @file GridConfig.js (Integrated with GridConfigSystem)
- * @description Normalizes and validates grid runtime configuration using centralized defaults
- * Pure utility functions with centralized configuration integration
+* @file GridConfig.js
+ * @description Normalizes and validates grid runtime configuration with drag threshold support
+ * Utility functions integrated with the centralized GridConfigSystem
  */
 
 import { gridConfig } from "./GridConfigSystem.js";
@@ -31,6 +31,13 @@ export async function normalizeConfig(input = {}) {
 			: gridConfig.get("gap");
 
 	cfg.blocks = Array.isArray(cfg.blocks) ? cfg.blocks : [];
+
+	// 🎯 NEW: Normalize drag threshold configuration
+	if (input.dragThreshold && typeof input.dragThreshold === "object") {
+		cfg.dragThreshold = normalizeDragThreshold(input.dragThreshold);
+	} else {
+		cfg.dragThreshold = gridConfig.get("dragThreshold");
+	}
 
 	/**
 	 * Normalize blocks array with validation and constraint enforcement
@@ -105,6 +112,74 @@ export async function normalizeConfig(input = {}) {
 }
 
 /**
+ * 🎯 NEW: Normalize drag threshold configuration
+ * @param {object} dragThreshold - Raw drag threshold config
+ * @returns {object} Normalized drag threshold config
+ */
+function normalizeDragThreshold(dragThreshold) {
+	const normalized = {
+		method: "round",
+		percentage: 0.5,
+		preset: "balanced",
+		directional: {
+			enabled: false,
+			horizontal: 0.5,
+			vertical: 0.5,
+		},
+	};
+
+	if (!dragThreshold || typeof dragThreshold !== "object") {
+		return normalized;
+	}
+
+	// Validate and normalize method
+	const validMethods = ["round", "floor", "ceil", "custom"];
+	if (validMethods.includes(dragThreshold.method)) {
+		normalized.method = dragThreshold.method;
+	}
+
+	// Validate and normalize percentage
+	if (Number.isFinite(dragThreshold.percentage)) {
+		normalized.percentage = Math.max(
+			0,
+			Math.min(1, dragThreshold.percentage)
+		);
+	}
+
+	// Validate and normalize preset
+	const validPresets = ["precise", "balanced", "loose", "custom"];
+	if (validPresets.includes(dragThreshold.preset)) {
+		normalized.preset = dragThreshold.preset;
+	}
+
+	// Validate and normalize directional settings
+	if (
+		dragThreshold.directional &&
+		typeof dragThreshold.directional === "object"
+	) {
+		normalized.directional.enabled = Boolean(
+			dragThreshold.directional.enabled
+		);
+
+		if (Number.isFinite(dragThreshold.directional.horizontal)) {
+			normalized.directional.horizontal = Math.max(
+				0,
+				Math.min(1, dragThreshold.directional.horizontal)
+			);
+		}
+
+		if (Number.isFinite(dragThreshold.directional.vertical)) {
+			normalized.directional.vertical = Math.max(
+				0,
+				Math.min(1, dragThreshold.directional.vertical)
+			);
+		}
+	}
+
+	return normalized;
+}
+
+/**
  * Clamp integer value to minimum
  * @param {number} v - Value to clamp
  * @param {number} min - Minimum value
@@ -116,7 +191,7 @@ function clampInt(v, min) {
 }
 
 /**
- * Validate grid configuration
+ * Validate grid configuration (ENHANCED with drag threshold validation)
  * @param {object} config - Configuration to validate
  * @returns {object} Validation result with errors array
  */
@@ -141,6 +216,12 @@ export function validateConfig(config) {
 
 	if (config.gap && config.gap < 0) {
 		errors.push("Gap must be non-negative");
+	}
+
+	// 🎯 NEW: Validate drag threshold configuration
+	if (config.dragThreshold) {
+		const thresholdErrors = validateDragThreshold(config.dragThreshold);
+		errors.push(...thresholdErrors);
 	}
 
 	if (config.blocks) {
@@ -171,6 +252,99 @@ export function validateConfig(config) {
 }
 
 /**
+ * 🎯 NEW: Validate drag threshold configuration
+ * @param {object} dragThreshold - Drag threshold config to validate
+ * @returns {Array} Array of validation error messages
+ */
+function validateDragThreshold(dragThreshold) {
+	const errors = [];
+
+	if (!dragThreshold || typeof dragThreshold !== "object") {
+		return errors; // Not required, so empty object is fine
+	}
+
+	// Validate method
+	const validMethods = ["round", "floor", "ceil", "custom"];
+	if (dragThreshold.method && !validMethods.includes(dragThreshold.method)) {
+		errors.push(
+			`Drag threshold method must be one of: ${validMethods.join(", ")}`
+		);
+	}
+
+	// Validate percentage
+	if (dragThreshold.percentage !== undefined) {
+		if (!Number.isFinite(dragThreshold.percentage)) {
+			errors.push("Drag threshold percentage must be a number");
+		} else if (
+			dragThreshold.percentage < 0 ||
+			dragThreshold.percentage > 1
+		) {
+			errors.push("Drag threshold percentage must be between 0 and 1");
+		}
+	}
+
+	// Validate preset
+	const validPresets = ["precise", "balanced", "loose", "custom"];
+	if (dragThreshold.preset && !validPresets.includes(dragThreshold.preset)) {
+		errors.push(
+			`Drag threshold preset must be one of: ${validPresets.join(", ")}`
+		);
+	}
+
+	// Validate directional settings
+	if (dragThreshold.directional) {
+		if (typeof dragThreshold.directional !== "object") {
+			errors.push(
+				"Drag threshold directional settings must be an object"
+			);
+		} else {
+			const { directional } = dragThreshold;
+
+			if (
+				directional.enabled !== undefined &&
+				typeof directional.enabled !== "boolean"
+			) {
+				errors.push(
+					"Drag threshold directional.enabled must be a boolean"
+				);
+			}
+
+			if (directional.horizontal !== undefined) {
+				if (!Number.isFinite(directional.horizontal)) {
+					errors.push(
+						"Drag threshold directional.horizontal must be a number"
+					);
+				} else if (
+					directional.horizontal < 0 ||
+					directional.horizontal > 1
+				) {
+					errors.push(
+						"Drag threshold directional.horizontal must be between 0 and 1"
+					);
+				}
+			}
+
+			if (directional.vertical !== undefined) {
+				if (!Number.isFinite(directional.vertical)) {
+					errors.push(
+						"Drag threshold directional.vertical must be a number"
+					);
+				} else if (
+					directional.vertical < 0 ||
+					directional.vertical > 1
+				) {
+					errors.push(
+						"Drag threshold directional.vertical must be between 0 and 1"
+					);
+				}
+			}
+		}
+	}
+
+	return errors;
+}
+
+/**
  * Create default grid configuration using centralized config
  * @param {object} overrides - Configuration overrides
  * @returns {object} Default configuration
@@ -186,6 +360,8 @@ export async function createDefaultConfig(overrides = {}) {
 		columns: gridConfig.get("columns"),
 		gap: gridConfig.get("gap"),
 		blocks: [],
+		// 🎯 NEW: Include default drag threshold configuration
+		dragThreshold: gridConfig.get("dragThreshold"),
 		...overrides,
 	});
 }
@@ -289,7 +465,7 @@ export function getResponsiveConfig(config, viewportWidth) {
 }
 
 /**
- * Configuration change listener setup
+ * Configuration change listener setup (ENHANCED with drag threshold support)
  * Allows GridConfig utilities to respond to centralized config changes
  */
 export function setupConfigurationListeners() {
@@ -315,6 +491,23 @@ export function setupConfigurationListeners() {
 				"[GridConfig] Grid columns changed, layouts may need reflow"
 			);
 		}
+
+		// 🎯 NEW: Handle drag threshold configuration changes
+		if (path.startsWith("dragThreshold")) {
+			console.log(
+				"[GridConfig] Drag threshold configuration changed, grids may need recalibration"
+			);
+
+			// Validate new threshold configuration
+			const thresholdConfig = gridConfig.get("dragThreshold");
+			const errors = validateDragThreshold(thresholdConfig);
+			if (errors.length > 0) {
+				console.warn(
+					"[GridConfig] Invalid drag threshold configuration:",
+					errors
+				);
+			}
+		}
 	});
 }
 
@@ -332,4 +525,7 @@ export default {
 	batchUpdateWidgetDefaults,
 	getResponsiveConfig,
 	setupConfigurationListeners,
+	// 🎯 NEW: Export drag threshold utilities
+	normalizeDragThreshold,
+	validateDragThreshold,
 };

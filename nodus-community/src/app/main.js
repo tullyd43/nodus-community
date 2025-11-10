@@ -51,6 +51,15 @@ async function bootstrap() {
 		const duration = performance.now() - startTime;
 		await finalizeBootstrap(duration);
 
+		// Give backend a short moment to register handlers, then add demo blocks
+		// (avoids racing plugin/handler registration during app bootstrap)
+		await new Promise((r) => setTimeout(r, 250));
+		try {
+			await addDemoBlocks();
+		} catch (e) {
+			console.warn("Failed to add demo blocks after bootstrap:", e);
+		}
+
 		console.log(`✅ Nodus initialized in ${duration.toFixed(2)}ms`);
 	} catch (error) {
 		console.error("❌ Bootstrap failed:", error);
@@ -115,8 +124,7 @@ async function initializeGrid() {
 	}
 	window.__nodus.gridSystem = mainGridSystem;
 
-	// Add demo blocks
-	await addDemoBlocks();
+	// NOTE: demo blocks deferred until after bootstrap to ensure backend handlers are registered
 }
 
 /**
@@ -219,6 +227,9 @@ async function addDemoBlocks() {
 	];
 
 	for (const block of demoBlocks) {
+		// Mark demo blocks to skip backend registration during bootstrap
+		block.skipBackend = true;
+
 		// ModernGrid API: addWidget returns the widget instance
 		await mainGridSystem.addWidget(block);
 	}

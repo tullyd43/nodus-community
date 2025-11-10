@@ -1,590 +1,591 @@
 /**
- * @file Grid.js (Integrated with GridConfigSystem)
- * @description Modern grid with centralized configuration management
+ * @file Grid.js (CLEAN IMPLEMENTATION)
+ * @description Simple grid with proper reflow behavior
+ * Key features:
+ * 1. Clean separation of concerns
+ * 2. Simple drag handling
+ * 3. Proper reflow triggers
+ * 4. Dynamic config integration
  */
 
-import { AtomicElement } from "@platform/ui/AtomicElements.js";
-import { ModernGridBlock } from "./components/GridBlock.js";
-import { GridLayout } from "./utils/GridLayout.js";
 import { gridConfig } from "./utils/GridConfigSystem.js";
+import { GridLayout } from "./utils/GridLayout.js";
 
-export class ModernGrid extends AtomicElement {
-	constructor(props = {}) {
-		super("div", {
-			...props,
-			className: `nodus-grid modern-grid ${props.className || ""}`,
-			"data-component": "modern-grid",
-			"data-grid-id": props.id || crypto.randomUUID(),
-		});
+export class ModernGrid {
+	constructor(element, options = {}) {
+		// DOM setup
+		this.element =
+			typeof element === "string"
+				? document.querySelector(element)
+				: element;
 
-		// Initialize config system
-		this.initializeConfig();
+		if (!this.element) {
+			throw new Error("Grid container not found");
+		}
 
-		// Grid configuration from centralized config (not hardcoded!)
-		this.gridId = this.element.dataset.gridId;
-		this.column = props.column ?? gridConfig.get("columns");
-		this.cellHeight = props.cellHeight ?? gridConfig.get("cellHeight");
-		this.margin = props.margin ?? gridConfig.get("gap");
-		this.marginUnit = props.marginUnit ?? "px";
+		// Configuration - read from config system
+		this.gridId = options.gridId || crypto.randomUUID();
+		this.column = options.columns || gridConfig.get("columns");
+		this.cellHeight = options.cellHeight || gridConfig.get("cellHeight");
+		this.margin = options.gap || gridConfig.get("gap");
 
-		// SINGLE REFLOW SYSTEM: Use centralized behavior config
-		this.float = props.float ?? gridConfig.get("float");
-		this.staticGrid = props.staticGrid ?? gridConfig.get("staticGrid");
-
-		// Interaction settings from config
-		this.animate = props.animate ?? gridConfig.get("animate");
-		this.disableDrag = props.disableDrag ?? false;
-		this.disableResize = props.disableResize ?? false;
-		this.acceptWidgets = props.acceptWidgets ?? false;
-
-		// Performance settings from config
-		this.dragThreshold =
-			props.dragThreshold ?? gridConfig.get("dragThreshold") ?? 8;
-		this.maxLiveReflowWidgets = gridConfig.get("maxLiveReflowWidgets");
-
-		this.dragStartPosition = null;
-		this.isDragActive = false;
-		this.draggedWidget = null;
-
-		// Internal state
+		// Grid state
 		this.widgets = new Map();
+		this.draggedWidget = null;
 		this.placeholder = null;
-		this.batchMode = false;
-
-		// Backend integration
-		this.actionDispatcher =
-			props.actionDispatcher || window.__nodus?.actionDispatcher;
-		this.orchestrator =
-			props.orchestrator || window.__nodus?.asyncOrchestrator;
 
 		// Layout engine
 		this.layout = new GridLayout({
 			columns: this.column,
 			gap: this.margin,
-			float: this.float,
+			responsive: options.responsive !== false,
 		});
 
-		// Setup grid
-		this.setupGridStyles();
-		this.setupGridInteractions();
-		this.setupResponsive();
+		// Setup
+		this.setupGridCSS();
+		this.setupDragEvents();
 		this.setupConfigListeners();
-	}
 
-	/**
-	 * Initialize configuration system
-	 */
-	async initializeConfig() {
-		try {
-			await gridConfig.initialize();
-		} catch (error) {
-			console.warn("[ModernGrid] Config initialization failed:", error);
-		}
-	}
-
-	/**
-	 * Setup listeners for configuration changes
-	 */
-	setupConfigListeners() {
-		window.addEventListener("nodus-grid-config-changed", (e) => {
-			this.handleConfigChange(e.detail);
+		console.log("[Grid] Initialized:", {
+			columns: this.column,
+			cellHeight: this.cellHeight,
+			gap: this.margin,
+			float: gridConfig.get("float"),
 		});
 	}
 
 	/**
-	 * Handle configuration changes
+	 * Setup CSS Grid layout
 	 */
-	handleConfigChange(detail) {
-		const { path, value } = detail;
+	setupGridCSS() {
+		this.element.style.display = "grid";
+		this.element.style.gridTemplateColumns = `repeat(${this.column}, 1fr)`;
+		this.element.style.gridAutoRows = `${this.cellHeight}px`;
+		this.element.style.gap = `${this.margin}px`;
+		this.element.style.position = "relative";
+		this.element.style.minHeight = "400px";
 
-		// Update local properties based on config changes
-		switch (path) {
-			case "columns":
-				this.changeColumns(value);
-				break;
-			case "gap":
-				this.margin = value;
-				this.layout.gap = value;
-				this.setupGridStyles();
-				break;
-			case "float":
-				this.setFloat(value);
-				break;
-			case "staticGrid":
-				this.staticGrid = value;
-				this.setupGridInteractions();
-				break;
-			case "animate":
-				this.animate = value;
-				break;
-			case "maxLiveReflowWidgets":
-				this.maxLiveReflowWidgets = value;
-				break;
-		}
+		// Add CSS class for styling
+		this.element.classList.add("nodus-grid", "modern-grid");
 	}
 
 	/**
-	 * Check drag threshold
+	 * Setup drag and drop events
 	 */
-	checkDragThreshold(currentX, currentY) {
-		if (!this.dragStartPosition) return false;
-		const dx = currentX - this.dragStartPosition.x;
-		const dy = currentY - this.dragStartPosition.y;
-		const distance = Math.sqrt(dx * dx + dy * dy);
-		return distance > this.dragThreshold;
-	}
+	setupDragEvents() {
+		this.element.addEventListener("dragstart", (e) => {
+			const widget = this.getWidgetFromElement(e.target);
+			if (widget) {
+				this.handleDragStart(widget, e);
+			}
+		});
 
-	/**
-	 * Setup grid styles
-	 */
-	setupGridStyles() {
-		// Calculate cell size for square blocks
-		const cellSize = `minmax(80px, 1fr)`;
-
-		const styles = {
-			display: "grid",
-			gridTemplateColumns: `repeat(${this.column}, 1fr)`,
-			gridTemplateRows: `repeat(20, ${cellSize})`, // Start with 20 square rows
-			gap: `${this.margin}${this.marginUnit}`,
-			minHeight: "200px",
-			position: "relative",
-			// Allow scrolling instead of infinite expansion
-			maxHeight: "80vh",
-			overflowY: "auto",
-		};
-
-		Object.assign(this.element.style, styles);
-	}
-
-	/**
-	 * Setup grid interactions
-	 */
-	setupGridInteractions() {
-		if (this.staticGrid) {
-			// Static grid - no interactions
-			return;
-		}
-
-		// Drop zone
 		this.element.addEventListener("dragover", (e) => {
 			e.preventDefault();
-			if (this.isDragActive) {
+			if (this.draggedWidget) {
 				this.handleDragOver(e);
 			}
 		});
 
 		this.element.addEventListener("drop", (e) => {
 			e.preventDefault();
-			this.handleDrop(e);
+			if (this.draggedWidget) {
+				this.handleDrop(e);
+			}
+		});
+
+		this.element.addEventListener("dragend", () => {
+			this.handleDragEnd();
 		});
 	}
 
 	/**
-	 * Setup responsive behavior
+	 * Setup config change listeners
 	 */
-	setupResponsive() {
-		// Simple responsive handling
-		if (window.ResizeObserver) {
-			new ResizeObserver(() => {
-				this.updateGridHeight();
-			}).observe(this.element);
-		}
+	setupConfigListeners() {
+		window.addEventListener("nodus-grid-config-changed", (e) => {
+			const { path, value } = e.detail;
+
+			switch (path) {
+				case "columns":
+					this.column = value;
+					this.layout.updateConfig({ columns: value });
+					this.setupGridCSS();
+					break;
+				case "gap":
+					this.margin = value;
+					this.layout.updateConfig({ gap: value });
+					this.setupGridCSS();
+					break;
+				case "cellHeight":
+					this.cellHeight = value;
+					this.setupGridCSS();
+					break;
+				case "float":
+					// No action needed - layout engine reads this dynamically
+					console.log("[Grid] Float mode changed to:", value);
+					break;
+			}
+		});
 	}
 
 	/**
-	 * Add widget to grid
+	 * Add a widget to the grid
 	 */
-	addWidget(options = {}) {
-		// Get default block size from centralized config (not hardcoded!)
-		const defaultSize = gridConfig.getDefaultBlockSize();
-
-		// Set defaults if not specified (use config, not hardcoded values)
-		if (!options.w && !options.h) {
-			options.w = defaultSize.w;
-			options.h = defaultSize.h;
-		} else if (options.w && !options.h) {
-			options.h = options.w; // Make it square
-		} else if (options.h && !options.w) {
-			options.w = options.h; // Make it square
-		}
+	addWidget(props = {}) {
+		const widget = this.createWidget(props);
 
 		// Auto-position if needed
 		if (
-			options.autoPosition ||
-			(options.x === undefined && options.y === undefined)
+			props.autoPosition ||
+			(props.x === undefined && props.y === undefined)
 		) {
-			const position = this.findNextAvailablePosition(
-				options.w,
-				options.h
-			);
-			options.x = position.x;
-			options.y = position.y;
+			const position = this.findBestPosition(widget);
+			widget.x = position.x;
+			widget.y = position.y;
 		}
-
-		// Create widget
-		const widget = new ModernGridBlock({
-			...options,
-			grid: this,
-			actionDispatcher: this.actionDispatcher,
-			orchestrator: this.orchestrator,
-		});
 
 		// Add to grid
-		widget.mount(this);
 		this.widgets.set(widget.id, widget);
+		this.element.appendChild(widget.element);
+		widget.updatePosition();
 
-		// Trigger reflow if needed
-		if (!this.batchMode && !this.float) {
-			this.compact();
-		}
-
-		// Emit event
-		this.emitEvent("added", [widget]);
+		console.log("[Grid] Added widget:", {
+			id: widget.id,
+			position: { x: widget.x, y: widget.y, w: widget.w, h: widget.h },
+		});
 
 		return widget;
 	}
 
 	/**
-	 * Remove widget
+	 * Create a widget object with resize functionality - with debug logging
 	 */
-	removeWidget(widgetId, removeDOM = true, triggerEvent = true) {
-		const widget =
-			typeof widgetId === "string"
-				? this.widgets.get(widgetId)
-				: widgetId;
-		if (!widget) return this;
-
-		this.widgets.delete(widget.id);
-
-		if (removeDOM && widget.element) {
-			widget.element.remove();
-		}
-
-		// Trigger reflow if needed
-		if (!this.batchMode && !this.float) {
-			this.compact();
-		}
-
-		if (triggerEvent) {
-			this.emitEvent("removed", [widget]);
-		}
-
-		return this;
-	}
-
-	/**
-	 * Find next available position for auto-positioning
-	 */
-	findNextAvailablePosition(width = 2, height = 2) {
-		const blocks = Array.from(this.widgets.values()).map((widget) => ({
-			position: { x: widget.x, y: widget.y, w: widget.w, h: widget.h },
-		}));
-
-		// Use config defaults, not hardcoded
+	createWidget(props) {
 		const defaultSize = gridConfig.getDefaultBlockSize();
-		return this.layout.findBestPosition(
-			{ w: width || defaultSize.w, h: height || defaultSize.h },
-			blocks
-		);
-	}
 
-	/**
-	 * Compact the grid (main reflow method)
-	 */
-	compact() {
-		if (this.float) return; // No compacting in float mode
-
-		const blocks = Array.from(this.widgets.values()).map((widget) => ({
-			id: widget.id,
-			locked: widget.locked || false,
-			position: { x: widget.x, y: widget.y, w: widget.w, h: widget.h },
-		}));
-
-		const compacted = this.layout.optimizeLayout(blocks);
-
-		// Apply new positions
-		compacted.forEach((block) => {
-			const widget = this.widgets.get(block.id);
-			if (widget) {
-				widget.updatePosition(block.position.x, block.position.y);
-			}
-		});
-
-		this.updateGridHeight();
-	}
-
-	/**
-	 * Handle drag over
-	 */
-	handleDragOver(e) {
-		if (!this.draggedWidget) return;
-
-		// Only start reflow after drag threshold
-		if (!this.checkDragThreshold(e.clientX, e.clientY)) return;
-
-		const targetPos = this.getGridPositionFromPixels(e.clientX, e.clientY);
-		this.showPlaceholder(targetPos, {
-			w: this.draggedWidget.w,
-			h: this.draggedWidget.h,
-		});
-
-		// Performance optimization: throttle live reflow for many widgets
-		if (!this.float && this.widgets.size < this.maxLiveReflowWidgets) {
-			// Throttle reflow to avoid excessive DOM updates
-			if (!this._reflowThrottle) {
-				this._reflowThrottle = setTimeout(() => {
-					this.handleLiveReflow(targetPos);
-					this._reflowThrottle = null;
-				}, gridConfig.get("reflowThrottleMs"));
-			}
-		}
-	}
-
-	/**
-	 * Handle live reflow during drag
-	 */
-	handleLiveReflow(targetPos) {
-		// STEP 1: Reset all widgets to their logical positions first
-		this.widgets.forEach((widget) => {
-			if (widget.id !== this.draggedWidget.id && !widget.locked) {
-				widget.element.style.gridColumn = `${widget.x + 1} / span ${
-					widget.w
-				}`;
-				widget.element.style.gridRow = `${widget.y + 1} / span ${
-					widget.h
-				}`;
-				widget.element.classList.remove("grid-moving");
-				// CRITICAL: Ensure widget stays visible
-				widget.element.style.display = "";
-				widget.element.style.opacity = "";
-			}
-		});
-
-		// STEP 2: Keep dragged widget visible and at original position during drag
-		if (this.draggedWidget) {
-			this.draggedWidget.element.style.display = "";
-			this.draggedWidget.element.style.opacity = "0.5"; // Semi-transparent
-			this.draggedWidget.element.style.gridColumn = `${
-				this.draggedWidget.x + 1
-			} / span ${this.draggedWidget.w}`;
-			this.draggedWidget.element.style.gridRow = `${
-				this.draggedWidget.y + 1
-			} / span ${this.draggedWidget.h}`;
-		}
-
-		// STEP 3: Temporarily place dragged widget at target position for layout calculation
-		const draggedAtTarget = {
-			x: targetPos.x,
-			y: targetPos.y,
-			w: this.draggedWidget.w,
-			h: this.draggedWidget.h,
+		const widget = {
+			id: props.id || crypto.randomUUID(),
+			x: props.x ?? 0,
+			y: props.y ?? 0,
+			w: props.w ?? defaultSize.w,
+			h: props.h ?? defaultSize.h,
+			minW: props.minW ?? 1,
+			minH: props.minH ?? 1,
+			maxW: props.maxW ?? this.column,
+			maxH: props.maxH ?? 10,
+			locked: props.locked ?? false,
+			noResize: props.noResize ?? false,
+			content: props.content || "",
 		};
 
-		// STEP 4: Run a simplified compact with dragged widget at new position
-		const allBlocks = Array.from(this.widgets.values())
-			.filter((w) => w.id !== this.draggedWidget.id && !w.locked) // Only unlocked widgets
-			.map((widget) => ({
-				id: widget.id,
-				locked: widget.locked || false,
-				position: {
-					x: widget.x,
-					y: widget.y,
-					w: widget.w,
-					h: widget.h,
-				},
-			}));
+		console.log(
+			`[Grid] Creating widget: ${widget.id}, source: ${
+				props.isLoadedFromStorage ? "STORAGE" : "NEW"
+			}`
+		);
 
-		// Add locked widgets back (they don't move)
-		Array.from(this.widgets.values())
-			.filter((w) => w.locked)
-			.forEach((widget) => {
-				allBlocks.push({
-					id: widget.id,
-					locked: true,
-					position: {
-						x: widget.x,
-						y: widget.y,
-						w: widget.w,
-						h: widget.h,
-					},
-				});
+		// Create DOM element
+		const el = document.createElement("div");
+		el.className = "grid-widget";
+		el.draggable = !widget.locked;
+		el.dataset.widgetId = widget.id;
+		el.innerHTML = widget.content;
+
+		// Add basic styling
+		el.style.cssText = `
+			background: white;
+			border: 1px solid #ddd;
+			border-radius: 4px;
+			padding: 8px;
+			cursor: ${widget.locked ? "default" : "move"};
+			user-select: none;
+			position: relative;
+			box-sizing: border-box;
+		`;
+
+		// Add resize handle if not locked and resize is enabled
+		if (!widget.locked && !widget.noResize) {
+			const resizeHandle = document.createElement("div");
+			resizeHandle.className = "resize-handle";
+			resizeHandle.style.cssText = `
+				position: absolute;
+				bottom: 0;
+				right: 0;
+				width: 12px;
+				height: 12px;
+				background: #007bff;
+				cursor: nw-resize;
+				border-radius: 0 0 4px 0;
+				opacity: 0.7;
+			`;
+			resizeHandle.addEventListener("mousedown", (e) => {
+				e.stopPropagation();
+				this.startResize(widget, e);
 			});
+			el.appendChild(resizeHandle);
+		}
 
-		// Add dragged widget at target position
-		allBlocks.push({
-			id: this.draggedWidget.id,
+		widget.element = el;
+
+		// Position update method
+		widget.updatePosition = () => {
+			el.style.gridColumn = `${widget.x + 1} / span ${widget.w}`;
+			el.style.gridRow = `${widget.y + 1} / span ${widget.h}`;
+		};
+
+		console.log(
+			`[Grid] Widget ${widget.id} created successfully with drag support`
+		);
+		return widget;
+	}
+
+	/**
+	 * Start resize operation
+	 */
+	startResize(widget, event) {
+		event.preventDefault();
+
+		const startMouseX = event.clientX;
+		const startMouseY = event.clientY;
+		const startW = widget.w;
+		const startH = widget.h;
+
+		console.log("[Grid] Resize started:", widget.id);
+
+		const handleMouseMove = (e) => {
+			const deltaX = e.clientX - startMouseX;
+			const deltaY = e.clientY - startMouseY;
+
+			// Calculate new size based on mouse delta
+			const cellWidth = this.element.offsetWidth / this.column;
+			const deltaW = Math.round(deltaX / cellWidth);
+			const deltaH = Math.round(deltaY / this.cellHeight);
+
+			const newW = Math.max(
+				widget.minW,
+				Math.min(startW + deltaW, widget.maxW)
+			);
+			const newH = Math.max(
+				widget.minH,
+				Math.min(startH + deltaH, widget.maxH)
+			);
+
+			// Constrain to grid bounds
+			const maxW = this.column - widget.x;
+			const constrainedW = Math.min(newW, maxW);
+
+			if (constrainedW !== widget.w || newH !== widget.h) {
+				widget.w = constrainedW;
+				widget.h = newH;
+				widget.updatePosition();
+
+				// Live reflow during resize if enabled
+				const shouldReflow = !gridConfig.get("float");
+				if (shouldReflow) {
+					this.compact();
+				}
+			}
+		};
+
+		const handleMouseUp = () => {
+			document.removeEventListener("mousemove", handleMouseMove);
+			document.removeEventListener("mouseup", handleMouseUp);
+
+			// Final compaction after resize
+			const shouldCompact = !gridConfig.get("float");
+			if (shouldCompact) {
+				this.compact();
+			}
+
+			console.log("[Grid] Resize completed:", {
+				widget: widget.id,
+				size: { w: widget.w, h: widget.h },
+			});
+		};
+
+		document.addEventListener("mousemove", handleMouseMove);
+		document.addEventListener("mouseup", handleMouseUp);
+	}
+
+	/**
+	 * Find best position for new widget - with collision handling
+	 */
+	findBestPosition(widget) {
+		const existingBlocks = Array.from(this.widgets.values()).map((w) => ({
+			id: w.id,
+			locked: w.locked,
+			position: { x: w.x, y: w.y, w: w.w, h: w.h },
+		}));
+
+		const position = this.layout.findBestPosition(
+			{ position: { w: widget.w, h: widget.h } },
+			existingBlocks
+		);
+
+		// If not in float mode, reflow existing blocks to make room
+		if (!gridConfig.get("float")) {
+			this.makeRoomForWidget(position, widget);
+		}
+
+		return position;
+	}
+
+	/**
+	 * Make room for a widget at the specified position by moving other blocks
+	 */
+	makeRoomForWidget(targetPosition, newWidget) {
+		console.log("[Grid] Making room at:", targetPosition);
+
+		// Create temp layout with the new widget
+		const tempBlocks = Array.from(this.widgets.values()).map((w) => ({
+			id: w.id,
+			locked: w.locked,
+			position: { x: w.x, y: w.y, w: w.w, h: w.h },
+		}));
+
+		// Add the new widget to temp layout
+		tempBlocks.push({
+			id: "temp-new-widget",
 			locked: false,
-			position: draggedAtTarget,
+			position: {
+				x: targetPosition.x,
+				y: targetPosition.y,
+				w: newWidget.w,
+				h: newWidget.h,
+			},
 		});
 
-		// Run optimization to find new positions
-		const optimized = this.layout.optimizeLayout(allBlocks);
+		console.log(
+			"[Grid] Before conflict resolution:",
+			tempBlocks.length,
+			"blocks"
+		);
 
-		// STEP 5: Apply optimized positions temporarily (visual only)
+		// Let layout engine resolve collisions
+		const optimized = this.layout.resolveConflicts(tempBlocks);
+
+		console.log("[Grid] After conflict resolution, applying positions");
+
+		// Apply positions to existing widgets (they'll move out of the way)
+		optimized.forEach((block) => {
+			if (block.id !== "temp-new-widget") {
+				const widget = this.widgets.get(block.id);
+				if (widget) {
+					const oldPos = { x: widget.x, y: widget.y };
+					const newPos = { x: block.position.x, y: block.position.y };
+
+					if (oldPos.x !== newPos.x || oldPos.y !== newPos.y) {
+						console.log(
+							`[Grid] Moving widget ${widget.id} from (${oldPos.x},${oldPos.y}) to (${newPos.x},${newPos.y})`
+						);
+						widget.x = newPos.x;
+						widget.y = newPos.y;
+						widget.updatePosition();
+					}
+				}
+			}
+		});
+	}
+
+	/**
+	 * Get widget from DOM element
+	 */
+	getWidgetFromElement(element) {
+		const widgetEl = element.closest("[data-widget-id]");
+		if (widgetEl) {
+			return this.widgets.get(widgetEl.dataset.widgetId);
+		}
+		return null;
+	}
+
+	/**
+	 * Handle drag start
+	 */
+	handleDragStart(widget, event) {
+		if (widget.locked) {
+			event.preventDefault();
+			return;
+		}
+
+		this.draggedWidget = widget;
+		widget.element.style.opacity = "0.5";
+
+		console.log("[Grid] Drag started:", widget.id);
+	}
+
+	/**
+	 * Handle drag over - show placeholder and live reflow
+	 */
+	handleDragOver(event) {
+		const dragPosition = this.getGridPositionFromPixels(
+			event.clientX,
+			event.clientY
+		);
+
+		// Constrain to grid bounds
+		dragPosition.x = Math.max(
+			0,
+			Math.min(dragPosition.x, this.column - this.draggedWidget.w)
+		);
+		dragPosition.y = Math.max(0, dragPosition.y);
+
+		// Calculate where the block will ACTUALLY end up after reflow
+		const finalPosition = this.calculateFinalPosition(dragPosition);
+
+		// Show placeholder at FINAL position (where it will actually land)
+		this.showPlaceholder(finalPosition, this.draggedWidget);
+
+		// Live reflow if enabled
+		const shouldReflow =
+			!gridConfig.get("float") && !gridConfig.get("staticGrid");
+
+		if (
+			shouldReflow &&
+			this.widgets.size <= gridConfig.get("maxLiveReflowWidgets")
+		) {
+			this.performLiveReflow(dragPosition);
+		}
+	}
+
+	/**
+	 * Calculate where block will actually end up after reflow algorithm
+	 */
+	calculateFinalPosition(dragPosition) {
+		// In float mode, block stays exactly where dropped
+		if (gridConfig.get("float")) {
+			return dragPosition;
+		}
+
+		// In compact mode, calculate where reflow will place it
+		const tempBlocks = Array.from(this.widgets.values()).map((w) => ({
+			id: w.id,
+			locked: w.locked,
+			position:
+				w.id === this.draggedWidget.id
+					? { x: dragPosition.x, y: dragPosition.y, w: w.w, h: w.h }
+					: { x: w.x, y: w.y, w: w.w, h: w.h },
+		}));
+
+		const optimized = this.layout.optimizeLayout(tempBlocks);
+		const draggedBlock = optimized.find(
+			(block) => block.id === this.draggedWidget.id
+		);
+
+		return draggedBlock ? draggedBlock.position : dragPosition;
+	}
+
+	/**
+	 * Perform live reflow during drag - with conflict resolution
+	 */
+	performLiveReflow(targetPosition) {
+		const tempBlocks = Array.from(this.widgets.values()).map((w) => ({
+			id: w.id,
+			locked: w.locked,
+			isDragged: w.id === this.draggedWidget.id, // 🎯 FIX: Mark dragged block
+			position:
+				w.id === this.draggedWidget.id
+					? {
+							x: targetPosition.x,
+							y: targetPosition.y,
+							w: w.w,
+							h: w.h,
+					  }
+					: { x: w.x, y: w.y, w: w.w, h: w.h },
+		}));
+
+		console.log(
+			`[Grid] Live reflow: dragged widget ${this.draggedWidget.id} to (${targetPosition.x},${targetPosition.y})`
+		);
+
+		// Use conflict resolution with proper dragged block detection
+		const optimized = this.layout.resolveConflicts(tempBlocks);
+
+		// Update positions of all widgets except the dragged one
 		optimized.forEach((block) => {
 			const widget = this.widgets.get(block.id);
-			if (
-				widget &&
-				widget.id !== this.draggedWidget.id &&
-				!widget.locked
-			) {
-				// Only apply if position actually changed
+			if (widget && widget.id !== this.draggedWidget.id) {
 				if (
 					block.position.x !== widget.x ||
 					block.position.y !== widget.y
 				) {
-					widget.element.style.gridColumn = `${
-						block.position.x + 1
-					} / span ${widget.w}`;
-					widget.element.style.gridRow = `${
-						block.position.y + 1
-					} / span ${widget.h}`;
-					widget.element.classList.add("grid-moving");
+					console.log(
+						`[Grid] Live reflow: moving ${widget.id} from (${widget.x},${widget.y}) to (${block.position.x},${block.position.y})`
+					);
+					widget.x = block.position.x;
+					widget.y = block.position.y;
+					widget.updatePosition();
 				}
 			}
 		});
-
-		// STEP 6: Update grid height to accommodate new layout
-		const maxY = Math.max(
-			...optimized.map((block) => block.position.y + block.position.h)
-		);
-		if (maxY > 0) {
-			const cellSize = `minmax(80px, 1fr)`;
-			this.element.style.gridTemplateRows = `repeat(${
-				maxY + 5
-			}, ${cellSize})`;
-		}
-
-		// SAFETY: Ensure grid columns stay intact during drag
-		this.element.style.gridTemplateColumns = `repeat(${this.column}, 1fr)`;
 	}
 
 	/**
 	 * Handle drop
 	 */
-	handleDrop(e) {
-		const widgetId = e.dataTransfer.getData(
-			"application/nodus-grid-widget"
-		);
-		const position = this.getGridPositionFromPixels(e.clientX, e.clientY);
-
-		if (widgetId && this.draggedWidget) {
-			// Update final position
-			this.draggedWidget.x = position.x;
-			this.draggedWidget.y = position.y;
-			this.draggedWidget.updatePosition(position.x, position.y);
-
-			// Final compaction
-			if (!this.float) {
-				this.compact();
-			}
-
-			this.emitEvent("change", [Array.from(this.widgets.values())]);
-		}
-
-		this.endDrag();
-	}
-
-	/**
-	 * Start drag
-	 */
-	startDrag(widget, e) {
-		this.isDragActive = true;
-		this.draggedWidget = widget;
-		this.dragStartPosition = { x: e.clientX, y: e.clientY };
-
-		widget.element.classList.add("grid-dragging");
-
-		// Store original position
-		widget._originalPosition = { x: widget.x, y: widget.y };
-	}
-
-	/**
-	 * End drag
-	 */
-	endDrag() {
-		// Clear any pending reflow operations
-		if (this._reflowThrottle) {
-			clearTimeout(this._reflowThrottle);
-			this._reflowThrottle = null;
-		}
-
-		if (this.draggedWidget) {
-			this.draggedWidget.element.classList.remove("grid-dragging");
-			this.draggedWidget = null;
-		}
-
-		// CRITICAL: Reset all widgets to their logical positions
-		// Remove temporary visual positioning from live reflow
-		this.widgets.forEach((widget) => {
-			widget.element.style.gridColumn = `${widget.x + 1} / span ${
-				widget.w
-			}`;
-			widget.element.style.gridRow = `${widget.y + 1} / span ${widget.h}`;
-			widget.element.classList.remove("grid-moving");
-			// Reset any opacity changes
-			widget.element.style.opacity = "";
-			widget.element.style.display = "";
-		});
-
-		this.removePlaceholder();
-		this.isDragActive = false;
-		this.dragStartPosition = null;
-
-		// Update final grid height and ensure template integrity
-		this.updateGridHeight();
-		this.element.style.gridTemplateColumns = `repeat(${this.column}, 1fr)`;
-	}
-
-	/**
-	 * Handle widget resize from GridBlock
-	 */
-	handleWidgetResize(widget, newW, newH) {
-		// Validate size constraints
-		const constrainedW = Math.max(
-			widget.minW,
-			Math.min(newW, widget.maxW || this.column)
-		);
-		const constrainedH = Math.max(
-			widget.minH,
-			Math.min(newH, widget.maxH || 100)
+	handleDrop(event) {
+		const position = this.getGridPositionFromPixels(
+			event.clientX,
+			event.clientY
 		);
 
-		// Try to resize
-		widget.updateSize(constrainedW, constrainedH);
+		// Update widget position
+		this.draggedWidget.x = Math.max(
+			0,
+			Math.min(position.x, this.column - this.draggedWidget.w)
+		);
+		this.draggedWidget.y = Math.max(0, position.y);
+		this.draggedWidget.updatePosition();
 
-		// Trigger reflow if not in float mode
-		if (!this.float) {
+		// Final compaction
+		const shouldCompact =
+			!gridConfig.get("float") && !gridConfig.get("staticGrid");
+		if (shouldCompact) {
 			this.compact();
 		}
+
+		console.log("[Grid] Drop completed:", {
+			widget: this.draggedWidget.id,
+			position: { x: this.draggedWidget.x, y: this.draggedWidget.y },
+		});
 	}
 
 	/**
-	 * Show placeholder
+	 * Handle drag end
 	 */
-	showPlaceholder(position, size) {
-		if (!this.placeholder) {
-			this.placeholder = document.createElement("div");
-			this.placeholder.className = "grid-placeholder";
-			this.placeholder.style.cssText = `
-				background: rgba(0, 0, 0, 0.1);
-				border: 2px dashed #999;
-				border-radius: 4px;
-				pointer-events: none;
-			`;
-			this.element.appendChild(this.placeholder);
+	handleDragEnd() {
+		if (this.draggedWidget) {
+			this.draggedWidget.element.style.opacity = "";
+			this.draggedWidget = null;
 		}
-
-		this.placeholder.style.gridColumn = `${position.x + 1} / span ${
-			size.w
-		}`;
-		this.placeholder.style.gridRow = `${position.y + 1} / span ${size.h}`;
+		this.hidePlaceholder();
 	}
 
 	/**
-	 * Remove placeholder
+	 * Show placeholder at position
 	 */
-	removePlaceholder() {
+	showPlaceholder(position, widget) {
+		this.hidePlaceholder();
+
+		this.placeholder = document.createElement("div");
+		this.placeholder.className = "grid-placeholder";
+		this.placeholder.style.cssText = `
+			grid-column: ${position.x + 1} / span ${widget.w};
+			grid-row: ${position.y + 1} / span ${widget.h};
+			background: rgba(59, 130, 246, 0.2);
+			border: 2px dashed #3b82f6;
+			border-radius: 4px;
+			pointer-events: none;
+			z-index: 100;
+		`;
+
+		this.element.appendChild(this.placeholder);
+	}
+
+	/**
+	 * Hide placeholder
+	 */
+	hidePlaceholder() {
 		if (this.placeholder) {
 			this.placeholder.remove();
 			this.placeholder = null;
@@ -592,109 +593,116 @@ export class ModernGrid extends AtomicElement {
 	}
 
 	/**
-	 * Convert pixel coordinates to grid position
+	 * Convert pixel coordinates to grid position - simple and clean
 	 */
-	getGridPositionFromPixels(x, y) {
-		return this.layout.pixelsToGridPosition(x, y, this.element);
+	getGridPositionFromPixels(clientX, clientY) {
+		const rect = this.element.getBoundingClientRect();
+		const relativeX = clientX - rect.left;
+		const relativeY = clientY - rect.top;
+
+		const columnWidth =
+			(rect.width - this.margin * (this.column - 1)) / this.column;
+		const rowHeight = this.cellHeight;
+
+		const gridX = Math.floor(relativeX / (columnWidth + this.margin));
+		const gridY = Math.floor(relativeY / (rowHeight + this.margin));
+
+		return {
+			x: Math.max(0, Math.min(gridX, this.column - 1)),
+			y: Math.max(0, gridY),
+		};
 	}
 
 	/**
-	 * Update grid height by adding more rows as needed
+	 * Compact the grid layout
 	 */
-	updateGridHeight() {
-		if (this.widgets.size === 0) return;
-
-		const maxY = Math.max(
-			...Array.from(this.widgets.values()).map((w) => w.y + w.h)
-		);
-
-		// Add extra buffer rows and maintain square proportions
-		const neededRows = maxY + 5; // Always have 5 extra rows
-		const cellSize = `minmax(80px, 1fr)`;
-		this.element.style.gridTemplateRows = `repeat(${neededRows}, ${cellSize})`;
-
-		// Keep columns intact
-		this.element.style.gridTemplateColumns = `repeat(${this.column}, 1fr)`;
-	}
-
-	/**
-	 * Toggle float mode
-	 */
-	setFloat(enabled) {
-		this.float = enabled;
-		this.layout.float = enabled;
-
-		if (!enabled) {
-			this.compact(); // Compact when disabling float
-		}
-	}
-
-	/**
-	 * Change column count
-	 */
-	changeColumns(newColumns, layout = "compact") {
-		if (newColumns === this.column) return;
-
-		const oldColumns = this.column;
-		this.column = newColumns;
-		this.layout.columns = newColumns;
-
-		// Update CSS
-		this.element.style.gridTemplateColumns = `repeat(${newColumns}, 1fr)`;
-
-		if (layout === "none") return;
-
-		// Scale existing widgets
-		const blocks = Array.from(this.widgets.values()).map((widget) => ({
-			id: widget.id,
-			locked: widget.locked || false,
-			position: { x: widget.x, y: widget.y, w: widget.w, h: widget.h },
+	compact() {
+		const blocks = Array.from(this.widgets.values()).map((w) => ({
+			id: w.id,
+			locked: w.locked,
+			position: { x: w.x, y: w.y, w: w.w, h: w.h },
 		}));
 
-		const scaled = this.layout.adaptLayoutForColumns(
-			blocks,
-			oldColumns,
-			newColumns
-		);
+		const optimized = this.layout.optimizeLayout(blocks);
 
-		// Apply scaled positions
-		scaled.forEach((block) => {
+		// Update widget positions
+		optimized.forEach((block) => {
 			const widget = this.widgets.get(block.id);
 			if (widget) {
 				widget.x = block.position.x;
 				widget.y = block.position.y;
-				widget.w = block.position.w;
 				widget.updatePosition();
 			}
 		});
+
+		console.log("[Grid] Layout compacted");
 	}
 
 	/**
-	 * Batch mode for bulk operations
+	 * Remove widget
 	 */
-	batchUpdate(flag = true) {
-		this.batchMode = flag;
+	removeWidget(widgetId) {
+		const widget = this.widgets.get(widgetId);
+		if (!widget) return false;
 
-		if (!flag && !this.float) {
+		widget.element.remove();
+		this.widgets.delete(widgetId);
+
+		// Compact if needed
+		const shouldCompact =
+			!gridConfig.get("float") && !gridConfig.get("staticGrid");
+		if (shouldCompact) {
 			this.compact();
 		}
 
-		return this;
+		return true;
 	}
 
 	/**
-	 * Get column count
+	 * Clear all widgets
 	 */
-	getColumn() {
-		return this.column;
+	clear() {
+		this.widgets.forEach((widget) => widget.element.remove());
+		this.widgets.clear();
+		this.hidePlaceholder();
 	}
 
 	/**
-	 * Emit custom event
+	 * Serialize grid state
 	 */
-	emitEvent(eventName, detail) {
-		this.element.dispatchEvent(new CustomEvent(eventName, { detail }));
+	serialize() {
+		return {
+			widgets: Array.from(this.widgets.values()).map((w) => ({
+				id: w.id,
+				x: w.x,
+				y: w.y,
+				w: w.w,
+				h: w.h,
+				locked: w.locked,
+				content: w.content,
+			})),
+		};
+	}
+
+	/**
+	 * Load grid state - using addWidget for proper initialization
+	 */
+	load(data) {
+		this.clear();
+
+		if (data.widgets && Array.isArray(data.widgets)) {
+			data.widgets.forEach((widgetData) => {
+				// Use addWidget to ensure proper drag setup and event handlers
+				this.addWidget({
+					...widgetData,
+					isLoadedFromStorage: true, // Debug flag
+					autoPosition: false, // Use saved positions exactly
+				});
+			});
+		}
+
+		console.log(
+			`[Grid] Loaded ${data.widgets?.length || 0} widgets from storage`
+		);
 	}
 }
-
-export default ModernGrid;

@@ -1,10 +1,11 @@
 /**
- * @file GridBlock.js (Integrated with GridConfigSystem)
+ * @file GridBlock.js (Fixed with proper ID getter)
  * @description Modern grid block that uses centralized configuration
  */
 
 import { AtomicElement } from "@platform/ui/AtomicElements.js";
 import { gridConfig } from "../utils/GridConfigSystem.js";
+import { saveGrid as saveCachedGrid } from "../../storage/indexeddb.js";
 
 export class ModernGridBlock extends AtomicElement {
 	constructor(props = {}) {
@@ -51,17 +52,26 @@ export class ModernGridBlock extends AtomicElement {
 		this.orchestrator =
 			props.orchestrator || window.__nodus?.asyncOrchestrator;
 		this.grid = props.grid; // Parent grid reference
+		this.skipBackend = props.skipBackend ?? false;
 
 		// Setup component with modern grid features
 		this.setupModernGridStyles();
 		this.buildModernGridContent();
 		this.setupModernGridInteractions();
 		this.setupResizeHandles();
+		this.setupResizeEventHandlers();
 		this.updatePosition();
 		this.initializeBackend();
 
 		// Listen for config changes
 		this.setupConfigListeners();
+	}
+
+	/**
+	 * FIX: Add id getter to match Grid.js expectations
+	 */
+	get id() {
+		return this.gridId;
 	}
 
 	/**
@@ -273,7 +283,6 @@ export class ModernGridBlock extends AtomicElement {
 
 		let isDragging = false;
 		let dragStartPos = null;
-		let dragOffset = { x: 0, y: 0 };
 
 		// Mouse down - start drag
 		this.element.addEventListener("mousedown", (e) => {
@@ -283,11 +292,15 @@ export class ModernGridBlock extends AtomicElement {
 			e.preventDefault();
 			isDragging = true;
 			dragStartPos = { x: e.clientX, y: e.clientY };
-			this.element.style.zIndex = "1000";
-			this.element.style.transform = "scale(1.02)";
-			this.element.style.opacity = "0.9";
 
-			document.addEventListener("mousemove", handleDrag);
+			// INSTANT drag state - no delay
+			this.element.style.zIndex = "1000";
+			this.element.style.transition = "none"; // Remove any transitions for instant response
+			this.element.style.transform = "scale(1.02)"; // Start with scale immediately
+
+			document.addEventListener("mousemove", handleDrag, {
+				passive: false,
+			});
 			document.addEventListener("mouseup", handleDragEnd);
 		});
 
@@ -297,10 +310,11 @@ export class ModernGridBlock extends AtomicElement {
 			const deltaX = e.clientX - dragStartPos.x;
 			const deltaY = e.clientY - dragStartPos.y;
 
-			// Visual feedback during drag
+			// INSTANT and SMOOTH transform - no throttling, pure 60fps
 			this.element.style.transform = `scale(1.02) translate(${deltaX}px, ${deltaY}px)`;
+			this.element.style.opacity = "0.95";
 
-			// Notify grid of drag for potential drop zone highlighting
+			// Notify grid of drag for reflow (this can be throttled if needed)
 			if (this.grid && this.grid.handleWidgetDrag) {
 				this.grid.handleWidgetDrag(this, e);
 			}
@@ -313,7 +327,9 @@ export class ModernGridBlock extends AtomicElement {
 			document.removeEventListener("mousemove", handleDrag);
 			document.removeEventListener("mouseup", handleDragEnd);
 
-			// Reset visual state
+			// Reset visual state with smooth transition back
+			this.element.style.transition =
+				"all 0.15s cubic-bezier(0.25, 0.1, 0.25, 1)";
 			this.element.style.zIndex = "";
 			this.element.style.transform = "";
 			this.element.style.opacity = "";
@@ -425,7 +441,153 @@ export class ModernGridBlock extends AtomicElement {
 		});
 	}
 
-	updatePosition() {
+	setupResizeEventHandlers() {
+		if (this.locked || this.static || this.noResize) return;
+
+		const handles = this.element.querySelectorAll(".resize-handle");
+
+		handles.forEach((handle) => {
+			const position = handle.className
+				.split(" ")
+				.find((c) => c.startsWith("resize-"))
+				.split("-")[1];
+
+			let isResizing = false;
+			let startSize = null;
+			let startMouse = null;
+
+			handle.addEventListener("mousedown", (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+
+				isResizing = true;
+				startSize = { w: this.w, h: this.h };
+				startMouse = { x: e.clientX, y: e.clientY };
+
+				// Visual feedback
+				this.element.style.userSelect = "none";
+				document.body.style.cursor =
+					window.getComputedStyle(handle).cursor;
+
+				document.addEventListener("mousemove", handleResize);
+				document.addEventListener("mouseup", handleResizeEnd);
+			});
+
+			const handleResize = (e) => {
+				if (!isResizing) return;
+
+				const deltaX = e.clientX - startMouse.x;
+				const deltaY = e.clientY - startMouse.y;
+
+				let newW = startSize.w;
+				let newH = startSize.h;
+
+				// Calculate new size based on resize direction
+				switch (position) {
+					case "se": // Bottom-right
+						newW =
+							startSize.w +
+							Math.round(deltaX / (this.grid?.cellWidth || 100));
+						newH =
+							startSize.h +
+							Math.round(deltaY / (this.grid?.cellHeight || 80));
+						break;
+					case "sw": // Bottom-left
+						newW =
+							startSize.w -
+							Math.round(deltaX / (this.grid?.cellWidth || 100));
+						newH =
+							startSize.h +
+							Math.round(deltaY / (this.grid?.cellHeight || 80));
+						break;
+					case "ne": // Top-right
+						newW =
+							startSize.w +
+							Math.round(deltaX / (this.grid?.cellWidth || 100));
+						newH =
+							startSize.h -
+							Math.round(deltaY / (this.grid?.cellHeight || 80));
+						break;
+					case "nw": // Top-left
+						newW =
+							startSize.w -
+							Math.round(deltaX / (this.grid?.cellWidth || 100));
+						newH =
+							startSize.h -
+							Math.round(deltaY / (this.grid?.cellHeight || 80));
+						break;
+					case "e": // Right
+						newW =
+							startSize.w +
+							Math.round(deltaX / (this.grid?.cellWidth || 100));
+						break;
+					case "w": // Left
+						newW =
+							startSize.w -
+							Math.round(deltaX / (this.grid?.cellWidth || 100));
+						break;
+					case "s": // Bottom
+						newH =
+							startSize.h +
+							Math.round(deltaY / (this.grid?.cellHeight || 80));
+						break;
+					case "n": // Top
+						newH =
+							startSize.h -
+							Math.round(deltaY / (this.grid?.cellHeight || 80));
+						break;
+				}
+
+				// Apply constraints
+				newW = Math.max(this.minW || 1, newW);
+				newH = Math.max(this.minH || 1, newH);
+
+				if (this.maxW) newW = Math.min(this.maxW, newW);
+				if (this.maxH) newH = Math.min(this.maxH, newH);
+
+				// Ensure doesn't exceed grid bounds
+				if (this.grid) {
+					newW = Math.min(newW, this.grid.column - this.x);
+				}
+
+				// Update size if changed
+				if (newW !== this.w || newH !== this.h) {
+					this.w = newW;
+					this.h = newH;
+					this.updatePosition();
+
+					// Notify grid of resize
+					if (this.grid && this.grid.handleWidgetResize) {
+						this.grid.handleWidgetResize(this, {
+							w: newW,
+							h: newH,
+						});
+					}
+				}
+			};
+
+			const handleResizeEnd = () => {
+				if (!isResizing) return;
+
+				isResizing = false;
+				this.element.style.userSelect = "";
+				document.body.style.cursor = "";
+
+				document.removeEventListener("mousemove", handleResize);
+				document.removeEventListener("mouseup", handleResizeEnd);
+
+				console.log(
+					`[GridBlock] Resize completed: ${this.w}x${this.h}`
+				);
+			};
+		});
+	}
+
+	// FIX: Add updatePosition method for drag/drop
+	updatePosition(x, y) {
+		if (x !== undefined) this.x = x;
+		if (y !== undefined) this.y = y;
+
 		// Update CSS Grid positioning
 		this.element.style.gridColumn = `${this.x + 1} / span ${this.w}`;
 		this.element.style.gridRow = `${this.y + 1} / span ${this.h}`;
@@ -438,30 +600,114 @@ export class ModernGridBlock extends AtomicElement {
 	}
 
 	async initializeBackend() {
+		if (this.skipBackend) {
+			console.log(
+				`[GridBlock] Skipping backend registration for demo/static block ${this.gridId}`
+			);
+			return;
+		}
+
 		if (!this.actionDispatcher || !this.orchestrator) return;
 
-		try {
-			// Register widget with backend
-			const runner = this.orchestrator.createRunner(
-				"register_grid_widget"
-			);
-			await runner.run(() => {
-				return this.actionDispatcher.dispatch("GRID_WIDGET_REGISTER", {
-					id: this.gridId,
-					x: this.x,
-					y: this.y,
-					w: this.w,
-					h: this.h,
-					content: this.content,
-				});
-			});
-
+		// If the application bootstrap hasn't finished, wait for the ready event
+		if (!document.body.classList.contains("nodus-ready")) {
 			console.log(
-				`[GridBlock] Widget ${this.gridId} registered with backend`
+				`[GridBlock] Waiting for application bootstrap before registering widget ${this.gridId}`
 			);
-		} catch (error) {
-			console.error(`[GridBlock] Backend registration failed:`, error);
+			await new Promise((resolve) => {
+				const onReady = () => {
+					document.removeEventListener("nodus:ready", onReady);
+					resolve();
+				};
+				document.addEventListener("nodus:ready", onReady);
+				// Also resolve after a fallback timeout so we don't wait forever
+				setTimeout(resolve, 10000);
+			});
 		}
+
+		// Retry registration with exponential backoff if backend isn't ready yet
+		const maxAttempts = 6;
+		let attempt = 0;
+		let delay = 300; // ms
+
+		while (attempt < maxAttempts) {
+			attempt += 1;
+			try {
+				const runner = this.orchestrator.createRunner(
+					"register_grid_widget"
+				);
+
+				// Use core backend action names (grid.block.add) so Rust plugin handlers recognize it
+				const payload = {
+					blockConfig: {
+						type: "html",
+						title: this.title || null,
+						x: this.x,
+						y: this.y,
+						w: this.w,
+						h: this.h,
+						config: {},
+						content: this.content,
+					},
+					containerId: this.grid?.gridId || "default",
+				};
+
+				const result = await runner.run(() => {
+					return this.actionDispatcher.dispatch(
+						"grid.block.add",
+						payload
+					);
+				});
+
+				// If the server returns a blockId, record it for future updates
+				if (result && result.blockId) {
+					this.serverBlockId = result.blockId;
+
+					// Persist the updated grid state to cache so subsequent startups are fast
+					try {
+						if (this.grid && this.grid.gridId) {
+							await saveCachedGrid(
+								this.grid.gridId,
+								this.grid.serialize()
+							);
+						}
+					} catch (err) {
+						console.warn(
+							"[GridBlock] Failed to save grid cache after registration:",
+							err
+						);
+					}
+				}
+
+				// If dispatch returned any non-null result, treat as success
+				if (result !== null && result !== undefined) {
+					console.log(
+						`[GridBlock] Widget ${this.gridId} registered with backend (attempt ${attempt})`,
+						result
+					);
+					return;
+				}
+
+				// If result is null or indicates failure, retry after delay
+				console.warn(
+					`[GridBlock] Backend registration attempt ${attempt} failed or backend not ready. Retrying in ${delay}ms...`,
+					result
+				);
+			} catch (error) {
+				console.warn(
+					`[GridBlock] Backend registration attempt ${attempt} threw, will retry:`,
+					error
+				);
+			}
+
+			// Wait before next attempt
+			await new Promise((r) => setTimeout(r, delay));
+			delay = Math.min(5000, delay * 2);
+		}
+
+		console.error(
+			`[GridBlock] Failed to register widget ${this.gridId} after ${maxAttempts} attempts`
+		);
 	}
 
 	// Public API methods
