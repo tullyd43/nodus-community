@@ -4,7 +4,7 @@
  * Utility functions integrated with the centralized GridConfigSystem
  */
 
-import { gridConfig } from "./GridConfigSystem.js";
+import { gridConfig } from "../src/platform/grid/utils/GridConfigSystem.js";
 
 /**
  * Normalizes and validates grid configuration input

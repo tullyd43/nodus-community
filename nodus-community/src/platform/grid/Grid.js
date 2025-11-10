@@ -280,11 +280,23 @@ export class ModernGrid {
 				widget.h = newH;
 				widget.updatePosition();
 
-				// Live reflow during resize if enabled
-				const shouldReflow = !gridConfig.get("float");
-				if (shouldReflow) {
-					this.compact();
-				}
+				// Force collision resolution during resize
+				// Use resolveConflicts like drag does, not compact (which ignores overlaps)
+				const blocks = Array.from(this.widgets.values()).map((w) => ({
+					id: w.id,
+					locked: w.locked,
+					isDragged: w.id === widget.id, // Mark resized widget as dragged
+					position: { x: w.x, y: w.y, w: w.w, h: w.h },
+				}));
+				const resolved = this.layout.resolveConflicts(blocks);
+				resolved.forEach((block) => {
+					const w = this.widgets.get(block.id);
+					if (w) {
+						w.x = block.position.x;
+						w.y = block.position.y;
+						w.updatePosition();
+					}
+				});
 			}
 		};
 
@@ -292,11 +304,22 @@ export class ModernGrid {
 			document.removeEventListener("mousemove", handleMouseMove);
 			document.removeEventListener("mouseup", handleMouseUp);
 
-			// Final compaction after resize
-			const shouldCompact = !gridConfig.get("float");
-			if (shouldCompact) {
-				this.compact();
-			}
+			// Use resolveConflicts like drag does, not compact (which ignores overlaps)
+			const blocks = Array.from(this.widgets.values()).map((w) => ({
+				id: w.id,
+				locked: w.locked,
+				isDragged: w.id === widget.id, // Mark resized widget as dragged
+				position: { x: w.x, y: w.y, w: w.w, h: w.h },
+			}));
+			const resolved = this.layout.resolveConflicts(blocks);
+			resolved.forEach((block) => {
+				const w = this.widgets.get(block.id);
+				if (w) {
+					w.x = block.position.x;
+					w.y = block.position.y;
+					w.updatePosition();
+				}
+			});
 
 			console.log("[Grid] Resize completed:", {
 				widget: widget.id,
@@ -409,15 +432,74 @@ export class ModernGrid {
 		}
 
 		this.draggedWidget = widget;
-		widget.element.style.opacity = "0.5";
+		// Calculate cursor offset within the dragged block
+		const blockRect = widget.element.getBoundingClientRect();
+		this.dragOffset = {
+			x: event.clientX - blockRect.left,
+			y: event.clientY - blockRect.top,
+		};
+		widget.element.style.opacity = "0"; // Hide original but keep drag events
 
 		console.log("[Grid] Drag started:", widget.id);
+		// Create smooth cursor-following preview
+		this.createDragPreview(widget, event);
+	}
+
+	/**
+	 * Create smooth cursor-following preview
+	 */
+	createDragPreview(widget, event) {
+		// Remove any existing preview
+		this.removeDragPreview();
+
+		// Clone the widget element
+		this.dragPreview = widget.element.cloneNode(true);
+		this.dragPreview.id = widget.id + "-preview";
+		this.dragPreview.style.cssText = `
+			position: fixed;
+			pointer-events: none;
+			z-index: 10000;
+			transform: scale(1.02);
+			opacity: 0.8;
+			transition: none;
+			box-shadow: 0 8px 16px rgba(0,0,0,0.3);
+			width: ${widget.element.offsetWidth}px;
+			height: ${widget.element.offsetHeight}px;
+		`;
+
+		// Position at cursor
+		this.updateDragPreviewPosition(event);
+
+		// Add to document
+		document.body.appendChild(this.dragPreview);
+	}
+
+	/**
+	 * Update drag preview position to follow cursor
+	 */
+	updateDragPreviewPosition(event) {
+		if (!this.dragPreview) return;
+
+		this.dragPreview.style.left = event.clientX - this.dragOffset.x + "px";
+		this.dragPreview.style.top = event.clientY - this.dragOffset.y + "px";
+	}
+
+	/**
+	 * Remove drag preview
+	 */
+	removeDragPreview() {
+		if (this.dragPreview) {
+			this.dragPreview.remove();
+			this.dragPreview = null;
+		}
 	}
 
 	/**
 	 * Handle drag over - show placeholder and live reflow
 	 */
 	handleDragOver(event) {
+		// Update smooth cursor preview position
+		this.updateDragPreviewPosition(event);
 		const dragPosition = this.getGridPositionFromPixels(
 			event.clientX,
 			event.clientY
@@ -482,7 +564,11 @@ export class ModernGrid {
 		const tempBlocks = Array.from(this.widgets.values()).map((w) => ({
 			id: w.id,
 			locked: w.locked,
-			isDragged: w.id === this.draggedWidget.id, // 🎯 FIX: Mark dragged block
+			isDragged: w.id === this.draggedWidget.id,
+			originalPosition:
+				w.id === this.draggedWidget.id
+					? { x: this.draggedWidget.x, y: this.draggedWidget.y } // Original position
+					: null,
 			position:
 				w.id === this.draggedWidget.id
 					? {
@@ -495,11 +581,15 @@ export class ModernGrid {
 		}));
 
 		console.log(
-			`[Grid] Live reflow: dragged widget ${this.draggedWidget.id} to (${targetPosition.x},${targetPosition.y})`
+			`[Grid] Live reflow: dragged widget ${this.draggedWidget.id} from (${this.draggedWidget.x},${this.draggedWidget.y}) to (${targetPosition.x},${targetPosition.y})`
 		);
 
 		// Use conflict resolution with proper dragged block detection
 		const optimized = this.layout.resolveConflicts(tempBlocks);
+		// CRITICAL: Update dragged widget position to current target
+		// so next iteration uses this as the new "original" position
+		this.draggedWidget.x = targetPosition.x;
+		this.draggedWidget.y = targetPosition.y;
 
 		// Update positions of all widgets except the dragged one
 		optimized.forEach((block) => {
@@ -555,10 +645,11 @@ export class ModernGrid {
 	 */
 	handleDragEnd() {
 		if (this.draggedWidget) {
-			this.draggedWidget.element.style.opacity = "";
+			this.draggedWidget.element.style.opacity = ""; // Show original again
 			this.draggedWidget = null;
 		}
 		this.hidePlaceholder();
+		this.removeDragPreview();
 	}
 
 	/**
@@ -597,8 +688,16 @@ export class ModernGrid {
 	 */
 	getGridPositionFromPixels(clientX, clientY) {
 		const rect = this.element.getBoundingClientRect();
-		const relativeX = clientX - rect.left;
-		const relativeY = clientY - rect.top;
+		// Adjust cursor position by drag offset to represent block's top-left corner
+		let adjustedX = clientX;
+		let adjustedY = clientY;
+
+		if (this.dragOffset && this.draggedWidget) {
+			adjustedX = clientX - this.dragOffset.x;
+			adjustedY = clientY - this.dragOffset.y;
+		}
+		const relativeX = adjustedX - rect.left;
+		const relativeY = adjustedY - rect.top;
 
 		const columnWidth =
 			(rect.width - this.margin * (this.column - 1)) / this.column;

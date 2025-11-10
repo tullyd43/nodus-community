@@ -5,7 +5,7 @@
  */
 
 // Import the GridLayout class (use ES module import; worker is created as module)
-import { GridLayout } from "./GridLayout.js";
+import { GridLayout } from "./utils/GridLayout.js";
 
 let layoutEngine = null;
 

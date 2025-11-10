@@ -7,28 +7,55 @@
 import { ActionDispatcher } from "@platform/ActionDispatcher.js";
 import { AsyncOrchestrator } from "@platform/AsyncOrchestrator.js";
 import { createModernGrid } from "@platform/grid";
-// Expose compatibility test in the real app entry so it's available in the webview
 import testCompleteCompatibility from "@platform/grid/grid-compat-test.js";
+// Expose compatibility test in the real app entry so it's available in the webview.
 if (typeof window !== "undefined")
 	window.testCompleteCompatibility = testCompleteCompatibility;
 import {
 	Button,
 	Container,
 	GridBlock,
-	Text,
 	Modal,
+	Text,
 } from "@platform/ui/AtomicElements.js";
 import { CommandBar } from "@platform/ui/components/CommandBar.js";
 import { AppConfig } from "./environment.config.js";
 
-// Global instances
+/**
+ * @type {ActionDispatcher | undefined}
+ * @description Global instance of the ActionDispatcher for communicating with the backend.
+ */
 let actionDispatcher;
+/**
+ * @type {AsyncOrchestrator | undefined}
+ * @description Global instance of the AsyncOrchestrator for managing complex async operations.
+ */
 let asyncOrchestrator;
+/**
+ * @type {import('@platform/grid').ModernGrid | undefined}
+ * @description Global instance of the main grid system.
+ */
 let mainGridSystem;
+/**
+ * @type {CommandBar | undefined}
+ * @description Global instance of the main application command bar.
+ */
 let commandBar;
 
 /**
- * Bootstrap Nodus using imported atomic components
+ * Main entry point for the Nodus application. Orchestrates the initialization of all
+ * core systems, UI components, and global handlers. This function is designed to be
+ * the single starting point for the client-side application.
+ * @async
+ * @function bootstrap
+ * @returns {Promise<void>} A promise that resolves when the bootstrap process is complete, or rejects if a fatal error occurs.
+ * @throws {Error} Throws an error if a critical part of the bootstrap process fails (e.g., grid container not found).
+ * @fires nodus:ready - Dispatches a custom event on `document` when initialization is complete.
+ * @see {@link initializeCoreSystems}
+ * @see {@link initializeGrid}
+ * @see {@link createCommandBar}
+ * @see {@link setupGlobalHandlers}
+ * @see {@link finalizeBootstrap}
  */
 async function bootstrap() {
 	try {
@@ -69,7 +96,13 @@ async function bootstrap() {
 }
 
 /**
- * Initialize core backend systems
+ * Initializes and globally exposes core backend-facing systems, including the
+ * ActionDispatcher and AsyncOrchestrator. It also performs a "ping" to the
+ * Rust backend to verify connectivity.
+ * @async
+ * @function initializeCoreSystems
+ * @returns {Promise<void>} A promise that resolves when core systems are initialized.
+ * @global window.__nodus - Creates or extends the global `__nodus` namespace to provide system-wide access to core instances.
  */
 async function initializeCoreSystems() {
 	actionDispatcher = new ActionDispatcher();
@@ -93,7 +126,14 @@ async function initializeCoreSystems() {
 }
 
 /**
- * Initialize grid system
+ * Finds the main grid container in the DOM and initializes the `ModernGrid` instance
+ * with application-specific configuration. The grid instance is then exposed on the
+ * global namespace.
+ * @async
+ * @function initializeGrid
+ * @returns {Promise<void>} A promise that resolves when the grid is created and initialized.
+ * @throws {Error} If the grid container element with ID `#nodus-grid` is not found in the DOM.
+ * @global window.__nodus.gridSystem - Assigns the created grid instance for global access.
  */
 async function initializeGrid() {
 	const gridContainer = document.querySelector("#nodus-grid");
@@ -128,7 +168,11 @@ async function initializeGrid() {
 }
 
 /**
- * Create command bar using imported CommandBar component
+ * Constructs and mounts the main application `CommandBar` using the atomic `CommandBar`
+ * component. Defines the primary user actions for the application.
+ * @async
+ * @function createCommandBar
+ * @returns {Promise<void>} A promise that resolves when the command bar is created and mounted.
  */
 async function createCommandBar() {
 	const commands = [
@@ -190,7 +234,12 @@ async function createCommandBar() {
 }
 
 /**
- * Add demo blocks using imported GridBlock component
+ * Populates the grid with a set of demonstration blocks. This function is called
+ * after the main bootstrap to ensure all backend handlers and UI systems are ready.
+ * Blocks are marked with `skipBackend: true` to prevent registration attempts during this initial setup.
+ * @async
+@function addDemoBlocks
+ * @returns {Promise<void>} A promise that resolves when all demo blocks have been added to the grid.
  */
 async function addDemoBlocks() {
 	const demoBlocks = [
@@ -236,7 +285,11 @@ async function addDemoBlocks() {
 }
 
 /**
- * Add new block using imported components
+ * Handles the "Add Block" action. It creates a new block with default properties,
+ * lets the grid auto-position it, and provides visual feedback on the command bar.
+ * @async
+ * @function addNewBlock
+ * @returns {Promise<void>} A promise that resolves when the block has been added.
  */
 async function addNewBlock() {
 	try {
@@ -273,7 +326,11 @@ async function addNewBlock() {
 }
 
 /**
- * Export grid configuration
+ * Triggers the grid export process. It dispatches an action to get the grid's
+ * current state and then initiates a browser download of the resulting JSON file.
+ * @async
+ * @function exportGrid
+ * @returns {Promise<void>} A promise that resolves when the file download is initiated.
  */
 async function exportGrid() {
 	try {
@@ -297,7 +354,11 @@ async function exportGrid() {
 }
 
 /**
- * Show settings using imported Modal and other components
+ * Displays a settings modal dialog. This function demonstrates the composition of
+ * several atomic components (`Modal`, `Text`, `Button`) to create a complex UI element.
+ * @async
+ * @function showSettings
+ * @returns {Promise<void>} A promise that resolves when the modal is created and mounted.
  */
 async function showSettings() {
 	const modal = new Modal();
@@ -320,7 +381,10 @@ async function showSettings() {
 }
 
 /**
- * Setup global event handlers
+ * Establishes global event listeners for unhandled errors and rejections.
+ * It also initializes responsive handling for the application layout.
+ * @function setupGlobalHandlers
+ * @returns {void}
  */
 function setupGlobalHandlers() {
 	window.addEventListener("error", async (e) => {
@@ -337,7 +401,10 @@ function setupGlobalHandlers() {
 }
 
 /**
- * Setup responsive behavior
+ * Sets up a `matchMedia` listener to adapt the UI for different screen sizes.
+ * Specifically, it adjusts the position of the `CommandBar` for mobile and desktop views.
+ * @function setupResponsiveHandling
+ * @returns {void}
  */
 function setupResponsiveHandling() {
 	const mediaQuery = window.matchMedia("(max-width: 768px)");
@@ -371,7 +438,12 @@ function setupResponsiveHandling() {
 }
 
 /**
- * Report error to backend
+ * Sends a structured error report to the backend via the ActionDispatcher.
+ * This allows for centralized error logging and monitoring.
+ * @async
+ * @function reportError
+ * @param {Error} error - The error object to report.
+ * @returns {Promise<void>} A promise that resolves when the report has been dispatched.
  */
 async function reportError(error) {
 	try {
@@ -386,7 +458,11 @@ async function reportError(error) {
 }
 
 /**
- * Show error using imported components
+ * Displays a user-friendly, non-blocking error overlay in the case of a
+ * catastrophic failure (e.g., during bootstrap).
+ * @function showError
+ * @param {Error} error - The error object containing the message to display.
+ * @returns {void}
  */
 function showError(error) {
 	const errorContainer = new Container({
@@ -437,7 +513,13 @@ function showError(error) {
 }
 
 /**
- * Finalize bootstrap process
+ * Completes the bootstrap process by notifying the backend, adding a ready
+ * class to the document body, and dispatching a `nodus:ready` custom event
+ * to signal to other scripts that the application is fully initialized.
+ * @async
+ * @function finalizeBootstrap
+ * @param {number} duration - The total bootstrap duration in milliseconds.
+ * @returns {Promise<void>} A promise that resolves when finalization is complete.
  */
 async function finalizeBootstrap(duration) {
 	try {

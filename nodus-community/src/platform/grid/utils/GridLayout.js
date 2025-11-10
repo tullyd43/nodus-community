@@ -35,8 +35,14 @@ export class GridLayout {
 	 */
 	findBestPosition(block, existingBlocks = []) {
 		const defaultSize = {
-			w: block.position?.w || block.w || 1,
-			h: block.position?.h || block.h || 1,
+			w:
+				block.position?.w ||
+				block.w ||
+				gridConfig.getDefaultBlockSize().w,
+			h:
+				block.position?.h ||
+				block.h ||
+				gridConfig.getDefaultBlockSize().h,
 		};
 
 		this.buildOccupiedPositions(existingBlocks);
@@ -121,13 +127,13 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 FIXED: Optimize layout with proper GridStack.js behavior
+	 * ðŸŽ¯ FIXED: Optimize layout with proper GridStack.js behavior
 	 * - Reads current config dynamically (no static state)
 	 * - Float mode: preserve positions, just validate bounds
 	 * - Compact mode: move blocks upward only (no aggressive repositioning)
 	 */
 	optimizeLayout(blocks = []) {
-		// 🎯 DYNAMIC CONFIG: Read current setting each time
+		// ðŸŽ¯ DYNAMIC CONFIG: Read current setting each time
 		const currentFloat = gridConfig.get("float");
 
 		if (currentFloat) {
@@ -153,29 +159,11 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 PROPER GRIDSTACK REFLOW: Downward cascading collision resolution
+	 * ðŸŽ¯ PROPER GRIDSTACK REFLOW: Downward cascading collision resolution
 	 * When dragged block collides, push colliding blocks downward (cascade)
 	 */
 	resolveConflicts(blocks = []) {
-		const currentFloat = gridConfig.get("float");
-
-		if (currentFloat) {
-			// Float mode: just validate bounds, no conflict resolution
-			return blocks.map((block) => ({
-				...block,
-				position: {
-					...block.position,
-					x: Math.max(
-						0,
-						Math.min(
-							block.position.x,
-							this.columns - block.position.w
-						)
-					),
-					y: Math.max(0, block.position.y),
-				},
-			}));
-		}
+		// Force conflict resolution regardless of float mode (needed for resize operations)
 
 		// Find the dragged block
 		const draggedBlock = blocks.find((b) => b.isDragged);
@@ -195,8 +183,8 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 GRIDSTACK ALGORITHM: Cascade blocks downward when collisions occur
-	 * Then compact upward to fill gaps
+	 * ðŸŽ¯ GRIDSTACK ALGORITHM: Smart collision resolution with swapping
+	 * Prevents bulldozing by allowing blocks to fill vacated spaces
 	 */
 	cascadeDownward(blocks, draggedBlock) {
 		// Start with all blocks in their current positions
@@ -205,46 +193,106 @@ export class GridLayout {
 			position: { ...b.position },
 		}));
 
-		// Sort by Y position (top to bottom) for processing order
-		const sortedBlocks = result
+		// Get the dragged block and its original position
+		const draggedResult = result.find((b) => b.isDragged);
+		const originalPosition = blocks.find(
+			(b) => b.isDragged
+		)?.originalPosition;
+
+		if (!originalPosition) {
+			// No original position info - use standard collision resolution
+			return this.handleStandardCollisions(result, draggedResult);
+		}
+
+		// Check if we're dragging downward
+		const isDraggingDown = draggedResult.position.y > originalPosition.y;
+
+		if (isDraggingDown) {
+			console.log(
+				`[GridLayout] Dragging down from y=${originalPosition.y} to y=${draggedResult.position.y}: checking for smart swapping`
+			);
+			return this.handleDownwardDrag(
+				result,
+				draggedResult,
+				originalPosition
+			);
+		} else {
+			// Normal upward/sideways drag - use standard collision resolution
+			return this.handleStandardCollisions(result, draggedResult);
+		}
+	}
+
+	/**
+	 * ðŸŽ¯ SMART DOWNWARD DRAG: Handle swapping instead of bulldozing
+	 */
+	handleDownwardDrag(blocks, draggedBlock, originalPosition) {
+		// Find blocks that collide with the dragged block
+		const collidingBlocks = blocks.filter(
+			(b) =>
+				!b.isDragged &&
+				!b.locked &&
+				this.blocksCollide(b.position, draggedBlock.position)
+		);
+
+		for (const collidingBlock of collidingBlocks) {
+			console.log(
+				`[GridLayout] Smart swap: ${collidingBlock.id} moves up to fill vacated space at y=${originalPosition.y}`
+			);
+
+			// Move the colliding block up to fill the original space
+			collidingBlock.position.y = originalPosition.y;
+		}
+
+		// Compact upward to fill any remaining gaps
+		this.compactUpwardExceptDragged(blocks, draggedBlock);
+
+		return blocks;
+	}
+
+	/**
+	 * ðŸŽ¯ STANDARD COLLISION: Handle upward/sideways drags with pushing
+	 */
+	handleStandardCollisions(blocks, draggedBlock) {
+		const sortedBlocks = blocks
 			.filter((b) => !b.isDragged && !b.locked)
 			.sort((a, b) => a.position.y - b.position.y);
 
-		// Place the dragged block at its target position first
-		const draggedResult = result.find((b) => b.isDragged);
-
-		// Step 1: Push blocks down to resolve collisions
+		// Process each block for collisions with dragged block
 		for (const block of sortedBlocks) {
-			// Check if this block collides with the dragged block
-			if (this.blocksCollide(block.position, draggedResult.position)) {
+			if (this.blocksCollide(block.position, draggedBlock.position)) {
 				console.log(
-					`[GridLayout] Collision: pushing ${block.id} down from y=${block.position.y}`
+					`[GridLayout] Standard collision: pushing ${block.id} down`
 				);
 
 				// Push this block down below the dragged block
 				block.position.y =
-					draggedResult.position.y + draggedResult.position.h;
+					draggedBlock.position.y + draggedBlock.position.h;
 
-				console.log(
-					`[GridLayout] Pushed ${block.id} to y=${block.position.y}`
+				// Check for cascading collisions
+				this.resolveCascadingCollisions(
+					block,
+					blocks.filter((b) => !b.isDragged)
 				);
 			}
-
-			// Check for cascading collisions with blocks processed earlier
-			this.resolveCascadingCollisions(
-				block,
-				result.filter((b) => !b.isDragged)
-			);
 		}
 
 		// Step 2: Compact upward to fill gaps (except dragged block)
-		this.compactUpwardExceptDragged(result, draggedResult);
+		this.compactUpwardExceptDragged(blocks, draggedBlock);
 
-		return result;
+		return blocks;
 	}
 
 	/**
-	 * 🎯 LIVE REFLOW COMPACTION: Move blocks upward to fill gaps, but preserve dragged block position
+	 * Check if two blocks overlap horizontally (for swap detection)
+	 */
+	blocksOverlapHorizontally(blockA, blockB) {
+		return !(
+			blockA.x >= blockB.x + blockB.w || blockB.x >= blockA.x + blockA.w
+		);
+	}
+
+	/**
+	 * ðŸŽ¯ LIVE REFLOW COMPACTION: Move blocks upward to fill gaps, but preserve dragged block position
 	 */
 	compactUpwardExceptDragged(blocks, draggedBlock) {
 		// Build occupied positions map excluding the dragged block
@@ -289,7 +337,7 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 CASCADING: Handle chain reactions when moved blocks hit other blocks
+	 * ðŸŽ¯ CASCADING: Handle chain reactions when moved blocks hit other blocks
 	 */
 	resolveCascadingCollisions(movedBlock, allBlocks) {
 		let hadCollision;
@@ -318,7 +366,7 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 SEPARATED CONCERN: Resolve overlapping blocks
+	 * ðŸŽ¯ SEPARATED CONCERN: Resolve overlapping blocks
 	 * Fixed: No more bulldozing - find optimal positions for all blocks
 	 */
 	resolveOverlaps(blocks = []) {
@@ -388,7 +436,7 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 NEW: Redistribute all blocks when collision occurs - no bulldozing
+	 * ðŸŽ¯ NEW: Redistribute all blocks when collision occurs - no bulldozing
 	 */
 	redistributeAllBlocks(draggedBlock, otherUnlockedBlocks, alreadyPlaced) {
 		console.log(
@@ -431,7 +479,7 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 IMPROVED: Find optimal position without bulldozing bias
+	 * ðŸŽ¯ IMPROVED: Find optimal position without bulldozing bias
 	 */
 	findOptimalPosition(desiredPosition) {
 		// Try the desired position first
@@ -491,7 +539,7 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 IMPROVED: Find best available position with symmetrical wall handling
+	 * ðŸŽ¯ IMPROVED: Find best available position with symmetrical wall handling
 	 */
 	findBestAvailablePosition(desiredPosition, alreadyPlaced) {
 		// Try the desired position first
@@ -623,7 +671,7 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 COMPOSABLE: Find available position for a block, handling conflicts
+	 * ðŸŽ¯ COMPOSABLE: Find available position for a block, handling conflicts
 	 * Fixed to prevent "kick back to start" behavior
 	 */
 	findAvailablePosition(desiredPosition) {
@@ -733,7 +781,7 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 SEPARATED CONCERN: Pure upward compaction logic
+	 * ðŸŽ¯ SEPARATED CONCERN: Pure upward compaction logic
 	 * Moves blocks up to eliminate gaps, preserves relative positioning
 	 */
 	compactUpward(blocks = []) {
@@ -771,7 +819,7 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 COMPOSABLE: Find highest available position for a block
+	 * ðŸŽ¯ COMPOSABLE: Find highest available position for a block
 	 * Pure function that only moves upward
 	 */
 	findHighestPosition(position) {
@@ -792,7 +840,7 @@ export class GridLayout {
 	}
 
 	/**
-	 * 🎯 COMPOSABLE: Check if block can be placed at position
+	 * ðŸŽ¯ COMPOSABLE: Check if block can be placed at position
 	 * Pure function for collision detection
 	 */
 	canPlaceAt(position) {

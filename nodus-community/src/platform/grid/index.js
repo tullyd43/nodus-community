@@ -17,15 +17,9 @@ import { GridTabs } from "./components/GridTabs.js";
 import { GridCell } from "./components/GridCell.js";
 
 import { GridLayout } from "./utils/GridLayout.js";
-import {
-	normalizeConfig,
-	validateConfig,
-	createDefaultConfig,
-} from "./utils/GridConfig.js";
 
 // Re-export named bindings
 export { ModernGrid, ModernGridBlock, GridTab, GridTabs, GridCell, GridLayout };
-export { normalizeConfig, validateConfig, createDefaultConfig };
 
 /**
  * Modern Grid Factory - Primary API
@@ -384,56 +378,6 @@ export const ModernGridDebug = {
 /**
  * Configuration utilities - ENHANCED WITH DRAG THRESHOLDS
  */
-export const ModernGridConfig = {
-	// Get current configuration
-	getConfig: () => gridConfig,
-
-	// Quick configuration shortcuts
-	setDefaultBlockSize: (w, h) => gridConfig.setDefaultBlockSize(w, h),
-	setColumns: (columns) => gridConfig.set("columns", columns),
-	setGap: (gap) => gridConfig.set("gap", gap),
-	enableReflow: () => gridConfig.set("float", false),
-	disableReflow: () => gridConfig.set("float", true),
-	enableAnimations: () => gridConfig.set("animate", true),
-	disableAnimations: () => gridConfig.set("animate", false),
-
-	// 🎯 NEW: Drag threshold configuration shortcuts
-	setDragSensitivity: (preset) => gridConfig.setDragSensitivityPreset(preset),
-	getDragThreshold: () => gridConfig.getDragThresholdInfo(),
-	setCustomThreshold: (percentage) => {
-		gridConfig.set("dragThreshold.method", "custom");
-		gridConfig.set("dragThreshold.percentage", percentage);
-	},
-
-	// Preset configurations
-	setSquareBlocks: () => {
-		const size = gridConfig.get("defaultBlockSize.w");
-		return gridConfig.set("defaultBlockSize.h", size);
-	},
-
-	setRectangleBlocks: (w, h) => gridConfig.setDefaultBlockSize(w, h),
-
-	// Performance presets
-	setPerformanceMode: (mode) => {
-		switch (mode) {
-			case "high-performance":
-				gridConfig.set("animate", false);
-				gridConfig.set("maxLiveReflowWidgets", 20);
-				gridConfig.set("reflowThrottleMs", 32);
-				break;
-			case "smooth":
-				gridConfig.set("animate", true);
-				gridConfig.set("maxLiveReflowWidgets", 50);
-				gridConfig.set("reflowThrottleMs", 16);
-				break;
-			case "unlimited":
-				gridConfig.set("animate", true);
-				gridConfig.set("maxLiveReflowWidgets", 200);
-				gridConfig.set("reflowThrottleMs", 8);
-				break;
-		}
-	},
-};
 
 /**
  * Theme utilities (unchanged)
@@ -532,5 +476,4 @@ export default {
 	ModernGridPlugin,
 
 	// Configuration utilities
-	ModernGridConfig,
 };
