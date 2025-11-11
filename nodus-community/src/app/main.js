@@ -4,7 +4,7 @@
  * Builds the UI using imported atomic components
  */
 
-import { ActionDispatcher } from "@platform/ActionDispatcher.js";
+import actionDispatcherSingleton from "@platform/ActionDispatcher.js";
 import { AsyncOrchestrator } from "@platform/AsyncOrchestrator.js";
 import { createModernGrid } from "@platform/grid";
 import testCompleteCompatibility from "@platform/grid/grid-compat-test.js";
@@ -105,7 +105,8 @@ async function bootstrap() {
  * @global window.__nodus - Creates or extends the global `__nodus` namespace to provide system-wide access to core instances.
  */
 async function initializeCoreSystems() {
-	actionDispatcher = new ActionDispatcher();
+	// Use shared singleton instance
+	actionDispatcher = actionDispatcherSingleton;
 	asyncOrchestrator = new AsyncOrchestrator();
 
 	// Test backend connection

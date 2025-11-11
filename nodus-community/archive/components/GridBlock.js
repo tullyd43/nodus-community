@@ -4,8 +4,8 @@
  */
 
 import { AtomicElement } from "@platform/ui/AtomicElements.js";
-import { gridConfig } from "../utils/GridConfigSystem.js";
-import { saveGrid as saveCachedGrid } from "../../storage/indexeddb.js";
+import { gridConfig } from "../../src/platform/grid/utils/GridConfigSystem.js";
+import { saveGrid as saveCachedGrid } from "../../src/platform/storage/indexeddb.js";
 
 export class ModernGridBlock extends AtomicElement {
 	constructor(props = {}) {

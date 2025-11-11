@@ -3,7 +3,7 @@
  * @description Lightweight component system for community release.
  * Simplified from enterprise BuildingBlockRenderer/ComponentRegistry to use basic primitives.
  */
-import { ActionDispatcher } from "@platform/ActionDispatcher.js";
+import actionDispatcher from "@platform/ActionDispatcher.js";
 
 /**
  * Simple atomic component definitions
@@ -87,7 +87,7 @@ export class SimpleComponentSystem {
 	 * Creates a SimpleComponentSystem instance
 	 */
 	constructor() {
-		this.#actionDispatcher = new ActionDispatcher();
+		this.#actionDispatcher = actionDispatcher;
 		this.#registerBuiltIns();
 	}
 

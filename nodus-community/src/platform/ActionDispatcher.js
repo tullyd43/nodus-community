@@ -37,7 +37,7 @@ async function safeInvoke(cmd, args) {
  * @class ActionDispatcher
  * @classdesc Enhanced proxy with Universal Plugin System support
  */
-export class ActionDispatcher {
+class ActionDispatcher {
 	/** @private @type {Map<HTMLElement, Function>} */
 	#rootListeners = new Map();
 	/** @private @type {Set<HTMLElement>} */
@@ -461,4 +461,6 @@ export class ActionDispatcher {
 	}
 }
 
-export default ActionDispatcher;
+// Export a single shared instance for the application to use.
+const actionDispatcher = new ActionDispatcher();
+export default actionDispatcher;

@@ -7,7 +7,7 @@
  * 3. Clean separation of concerns
  */
 
-import { gridConfig } from "./GridConfigSystem.js";
+import { gridConfig } from "../src/platform/grid/utils/GridConfigSystem.js";
 
 export class GridLayout {
 	constructor(options = {}) {

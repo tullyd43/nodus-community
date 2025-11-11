@@ -32,6 +32,8 @@ pub struct GridBlock {
     pub w: u32,
     pub h: u32,
     pub config: Value,
+    #[serde(default)]
+    pub static_grid: bool,
     pub entity_id: Option<String>,
 }
 
@@ -167,6 +169,7 @@ pub async fn update_grid_state(
                 w: block_data.get("w").and_then(|v| v.as_u64()).unwrap_or(1) as u32,
                 h: block_data.get("h").and_then(|v| v.as_u64()).unwrap_or(1) as u32,
                 config: block_data.get("config").cloned().unwrap_or(Value::Object(serde_json::Map::new())),
+                static_grid: block_data.get("static_grid").and_then(|v| v.as_bool()).unwrap_or(false),
                 entity_id: block_data.get("entity_id").and_then(|v| v.as_str()).map(|s| s.to_string()),
             };
             

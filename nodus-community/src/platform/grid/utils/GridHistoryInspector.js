@@ -3,7 +3,7 @@
  * @description Simplified grid history visualization for community release.
  * Uses Rust backend via ActionDispatcher for undo/redo functionality.
  */
-import { ActionDispatcher } from "@platform/ActionDispatcher.js";
+import actionDispatcher from "@platform/ActionDispatcher.js";
 
 /**
  * @class GridHistoryInspector
@@ -27,8 +27,7 @@ export class GridHistoryInspector {
 	 * @param {AsyncOrchestrator} [config.orchestrator] - AsyncOrchestrator instance
 	 */
 	constructor(config = {}) {
-		this.#actionDispatcher =
-			config.actionDispatcher || new ActionDispatcher();
+		this.#actionDispatcher = config.actionDispatcher || actionDispatcher;
 	}
 
 	/**
