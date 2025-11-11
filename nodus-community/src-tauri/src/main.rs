@@ -29,15 +29,25 @@ async fn execute_action_with_plugins(
     state: State<'_, AppStateType>,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    // Accept either camelCase (actionType) or snake_case (action_type) from various frontends
-    let action_type = args
+    // Support two shapes coming from the frontend:
+    // 1) Direct top-level: { actionType: "...", payload: { ... } }
+    // 2) Wrapped by the Tauri low-level invoke shape: { args: { actionType: "...", payload: { ... } } }
+    // Normalize to a single `effective_args` value so both callers work.
+    let effective_args = if let Some(inner) = args.get("args") {
+        inner.clone()
+    } else {
+        args.clone()
+    };
+
+    // Accept either camelCase (actionType) or snake_case (action_type)
+    let action_type = effective_args
         .get("actionType")
-        .or_else(|| args.get("action_type"))
+        .or_else(|| effective_args.get("action_type"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| "Missing actionType".to_string())?
         .to_string();
 
-    let payload = args.get("payload").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let payload = effective_args.get("payload").cloned().unwrap_or_else(|| serde_json::json!({}));
 
     let arc = state.inner().clone();
     nodus::commands_plugin::execute_action_with_plugins(arc, action_type, payload).await

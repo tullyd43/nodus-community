@@ -181,10 +181,18 @@ export class ModernGrid {
 				result?.data?.blockId ??
 				result?.data?.data?.blockId;
 			if (!blockId) {
-				console.error(
-					"[Grid] grid.block.add returned no blockId:",
-					result
-				);
+				// If dispatcher returned a structured error include it to aid debugging
+				if (result && result.error) {
+					console.error(
+						`[Grid] grid.block.add failed: ${result.error}`,
+						result
+					);
+				} else {
+					console.error(
+						"[Grid] grid.block.add returned no blockId:",
+						result
+					);
+				}
 				return null;
 			}
 

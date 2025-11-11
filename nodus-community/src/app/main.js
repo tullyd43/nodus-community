@@ -124,6 +124,15 @@ async function initializeCoreSystems() {
 		version: "8.0.0-community",
 		components: { Button, Container, GridBlock, CommandBar, Text, Modal },
 	};
+
+	// Also expose the ActionDispatcher directly for easier debugging in the
+	// embedded Tauri webview console. Some embedder environments may not allow
+	// writes to window, so guard with try/catch.
+	try {
+		window.__actionDispatcher = actionDispatcher;
+	} catch (e) {
+		// ignore
+	}
 }
 
 /**

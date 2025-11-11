@@ -160,9 +160,13 @@ pub async fn update_grid_state(
         "add" => {
             // Parse block data from the update
             let block_data = state_update.data;
+
+            // Diagnostic log: show the incoming block data to help debug missing fields / types
+            println!("[GridCommands] add branch incoming block_data: {}", block_data);
             let block = GridBlock {
                 id: state_update.block_id.clone(),
-                block_type: block_data.get("type").and_then(|v| v.as_str()).unwrap_or("html").to_string(),
+                // Frontend sends `block_type`; accept that name here.
+                block_type: block_data.get("block_type").and_then(|v| v.as_str()).unwrap_or("html").to_string(),
                 title: block_data.get("title").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 x: block_data.get("x").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
                 y: block_data.get("y").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
@@ -282,6 +286,9 @@ pub async fn dispatch_action(
 
         // Block operations - ACTUALLY WORKING NOW
         "grid.block.add" => {
+            // Diagnostic: log the incoming payload for grid.block.add to capture shape shown by frontend
+            println!("[GridCommands] grid.block.add payload: {}", payload);
+
             let block_config = payload.get("blockConfig")
                 .ok_or("Missing blockConfig")?;
             let container_id = payload.get("containerId")

@@ -29,8 +29,11 @@ pub struct Widget {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GridConfig {
+    #[serde(default)]
     pub columns: i32,
+    #[serde(default)]
     pub gap: i32,
+    #[serde(default)]
     pub float: bool,
     #[serde(default)]
     pub static_grid: bool,
